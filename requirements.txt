@@ -1,8 +1,0 @@
-flask
-pandas
-numpy
-pyyaml
-streamlit
-reportlab
-geopandas
-requests
