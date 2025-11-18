@@ -1,1 +1,3 @@
-# pfas-dc-riskscope
+# PFAS-DC RiskScope
+
+Project scaffold.
