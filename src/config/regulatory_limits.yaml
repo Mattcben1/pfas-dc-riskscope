@@ -1,0 +1,22 @@
+# EPA Final PFAS Regulation Limits (2024–2025)
+
+mcl_individual:
+  PFOA: 4         # ppt
+  PFOS: 4         # ppt
+
+hazard_index_contaminants:
+  PFHxS:
+    rfd: 0.00002      # mg/kg/day
+  PFNA:
+    rfd: 0.000003
+  HFPO-DA:            # GenX
+    rfd: 0.000003
+  PFBS:
+    rfd: 0.00003
+
+combined_mcl:
+  PFOA_PFOS_sum_limit: 4   # ppt (sum cannot exceed MCL)
+
+uncertainty:
+  confidence_interval: 0.10     # 10% uncertainty default
+  source: "EPA Final PFAS National Primary Drinking Water Regulation (2024–2025)"
