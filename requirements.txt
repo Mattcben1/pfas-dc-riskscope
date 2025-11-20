@@ -6,3 +6,6 @@ streamlit
 reportlab
 geopandas
 requests
+fastapi
+uvicorn
+
