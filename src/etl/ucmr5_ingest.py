@@ -117,28 +117,53 @@ def clean_and_filter(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def aggregate_state_medians(df_pfas: pd.DataFrame) -> pd.DataFrame:
+    """
+    Aggregate PFAS data to state-level stats:
+
+    - MEDIAN_PPT: median concentration in ppt
+    - MAX_PPT: max concentration in ppt
+    - N_SAMPLES: number of samples
+    - PCT_DETECTED: % of samples with value_ppt > 0
+    - PCT_CENSORED: % of samples with value_ppt == 0
+    """
     if df_pfas.empty:
         # Create an empty shell so downstream code still works
-        return pd.DataFrame(columns=["STATE", "CONTAMINANT", "MEDIAN_PPT"])
+        return pd.DataFrame(
+            columns=[
+                "STATE",
+                "CONTAMINANT",
+                "MEDIAN_PPT",
+                "MAX_PPT",
+                "N_SAMPLES",
+                "PCT_DETECTED",
+                "PCT_CENSORED",
+            ]
+        )
 
-    grp = (
-        df_pfas.groupby(["STATE_STD", "CONTAMINANT_STD"])["value_ppt"]
-        .median()
-        .reset_index()
-    )
+    grouped = df_pfas.groupby(["STATE_STD", "CONTAMINANT_STD"])["value_ppt"]
 
-    grp = grp.rename(
+    agg = grouped.agg(
+        MEDIAN_PPT="median",
+        MAX_PPT="max",
+        N_SAMPLES="size",
+        N_NONZERO=lambda s: (s > 0).sum(),
+    ).reset_index()
+
+    # Compute detection / censored percentages
+    agg["PCT_DETECTED"] = (agg["N_NONZERO"] / agg["N_SAMPLES"]) * 100.0
+    agg["PCT_CENSORED"] = 100.0 - agg["PCT_DETECTED"]
+
+    agg = agg.rename(
         columns={
             "STATE_STD": "STATE",
             "CONTAMINANT_STD": "CONTAMINANT",
-            "value_ppt": "MEDIAN_PPT",
         }
-    )
+    ).drop(columns=["N_NONZERO"])
 
     # Sort for readability
-    grp = grp.sort_values(["STATE", "CONTAMINANT"]).reset_index(drop=True)
+    agg = agg.sort_values(["STATE", "CONTAMINANT"]).reset_index(drop=True)
 
-    return grp
+    return agg
 
 
 def main():
