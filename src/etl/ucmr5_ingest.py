@@ -1,91 +1,162 @@
-from pathlib import Path
+"""
+ucmr5_ingest.py
+
+ETL for EPA UCMR5 dataset placed in data/raw/UCMR5_All.txt.
+
+Steps:
+- Load raw tab-delimited file
+- Filter to PFAS contaminants (using PFAS_CHEM_INFO)
+- Handle censored values (AnalyticalResultsSign = '<') as 0.0 for now
+- Convert from µg/L to ppt (1 µg/L = 1000 ppt)
+- Aggregate to state-level medians by contaminant
+- Save to data/processed/ucmr5_state_medians.csv
+"""
+
 import pandas as pd
-from typing import Dict, Optional, List
+import numpy as np
 
-# Default location of the raw file
-DEFAULT_PATH = Path("data/raw/UCMR5_All.txt")
+# --- Ensure project root is on PYTHONPATH ---
+import sys
+from pathlib import Path
 
-# Relevant EPA-regulated PFAS for 2024 MCL + Hazard Index
-TARGET_CHEMICALS = {
-    "PFOA": ["PFOA"],
-    "PFOS": ["PFOS"],
-    "PFHxS": ["PFHxS"],
-    "PFNA": ["PFNA"],
-    "PFBS": ["PFBS"],
-    "HFPO-DA": ["HFPO-DA", "GENX", "HFPO-DA"],
-}
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from simulation.pfas_mapping import PFAS_CHEM_INFO, is_pfas
+
+RAW_PATH = Path("data/raw/UCMR5_All.txt")
+OUT_MEDIANS = Path("data/processed/ucmr5_state_medians.csv")
+
+UGL_TO_PPT = 1000.0  # 1 µg/L = 1000 ppt
 
 
-def load_ucmr5(path: Optional[Path] = None) -> pd.DataFrame:
-    """Load the UCMR5 dataset with encoding handling."""
-    if path is None:
-        path = DEFAULT_PATH
+def detect_state_column(df: pd.DataFrame) -> str:
+    """
+    Try to find the correct state column name.
+    UCMR5 typically uses 'State'.
+    """
+    for cand in ["State", "STATE", "state"]:
+        if cand in df.columns:
+            return cand
+    raise KeyError("Could not find a State column in UCMR5 input.")
 
-    if not path.exists():
-        raise FileNotFoundError(f"Cannot find {path}")
 
-    try:
-        df = pd.read_csv(path, sep="\t", dtype=str, encoding="utf-8")
-    except UnicodeDecodeError:
-        df = pd.read_csv(path, sep="\t", dtype=str, encoding="latin1")
+def load_ucmr5_raw() -> pd.DataFrame:
+    if not RAW_PATH.exists():
+        raise FileNotFoundError(f"Raw UCMR5 file not found at {RAW_PATH}")
 
-    df.columns = [c.strip().upper() for c in df.columns]
-
-    df["ANALYTICALRESULTVALUE"] = pd.to_numeric(
-        df["ANALYTICALRESULTVALUE"], errors="coerce"
+    print("Loading UCMR5 raw file...")
+    df = pd.read_csv(
+        RAW_PATH,
+        sep="\t",
+        dtype=str,
+        encoding="latin-1",
     )
-
-    df = df.dropna(subset=["ANALYTICALRESULTVALUE"])
-    df["CONTAMINANT"] = df["CONTAMINANT"].str.upper()
-    df["UNITS"] = df["UNITS"].str.upper()
-
+    print(f"Loaded {len(df):,} rows with {len(df.columns)} columns.")
     return df
 
 
-def convert_to_ppt(df: pd.DataFrame) -> pd.DataFrame:
-    """Convert concentrations to ppt (ng/L)."""
-    df = df.copy()
+def clean_and_filter(df: pd.DataFrame) -> pd.DataFrame:
+    # Normalize key columns
+    if "Contaminant" not in df.columns:
+        raise KeyError("Expected 'Contaminant' column in UCMR5.")
 
-    ugr_mask = df["UNITS"].str.contains("UG/L") | df["UNITS"].str.contains("µG/L")
-    df.loc[ugr_mask, "PPT"] = df.loc[ugr_mask, "ANALYTICALRESULTVALUE"] * 1000
+    state_col = detect_state_column(df)
 
-    ppt_mask = df["UNITS"].str.contains("PPT")
-    df.loc[ppt_mask, "PPT"] = df.loc[ppt_mask, "ANALYTICALRESULTVALUE"]
+    df["Contaminant"] = df["Contaminant"].astype(str).str.upper().str.strip()
+    df[state_col] = df[state_col].astype(str).str.upper().str.strip()
 
-    return df.dropna(subset=["PPT"])
+    # Filter to rows that are PFAS (based on mapping)
+    mask_pfas = df["Contaminant"].apply(is_pfas)
+    df_pfas = df[mask_pfas].copy()
+
+    print(f"Filtered to {len(df_pfas):,} PFAS rows (from {len(df):,} total).")
+
+    if df_pfas.empty:
+        print("WARNING: No PFAS rows matched PFAS_CHEM_INFO. Check mapping.")
+        return df_pfas
+
+    # Handle censored values & convert units
+
+    if "AnalyticalResultValue" not in df_pfas.columns:
+        raise KeyError("Expected 'AnalyticalResultValue' column in UCMR5.")
+    if "AnalyticalResultsSign" not in df_pfas.columns:
+        # Some rows may not have sign; create a neutral one
+        df_pfas["AnalyticalResultsSign"] = ""
+
+    # Replace non-numeric values as NaN, but treat '<' as 0 for now.
+    # You could also use half MRL here if desired.
+    signs = df_pfas["AnalyticalResultsSign"].astype(str).str.strip()
+    vals = pd.to_numeric(df_pfas["AnalyticalResultValue"], errors="coerce")
+
+    # Censored values -> 0
+    censored_mask = signs == "<"
+    vals.loc[censored_mask] = 0.0
+
+    df_pfas["value_ugl"] = vals
+
+    # Drop missing numeric values
+    before_drop = len(df_pfas)
+    df_pfas = df_pfas.dropna(subset=["value_ugl"])
+    print(f"Dropped {before_drop - len(df_pfas):,} rows with non-numeric values.")
+
+    # Convert to ppt
+    df_pfas["value_ppt"] = df_pfas["value_ugl"] * UGL_TO_PPT
+
+    # Attach canonical PFAS name & category from mapping
+    df_pfas["CONTAMINANT_STD"] = df_pfas["Contaminant"].map(
+        lambda c: PFAS_CHEM_INFO[c]["canonical_name"]
+    )
+    df_pfas["CATEGORY"] = df_pfas["Contaminant"].map(
+        lambda c: PFAS_CHEM_INFO[c]["category"]
+    )
+    df_pfas["STATE_STD"] = df_pfas[state_col]
+
+    return df_pfas
 
 
-def compute_state_medians(df: pd.DataFrame) -> pd.DataFrame:
-    """Group by state + chemical and compute median."""
-    grouped = (
-        df.groupby(["STATE", "CONTAMINANT"])["PPT"]
+def aggregate_state_medians(df_pfas: pd.DataFrame) -> pd.DataFrame:
+    if df_pfas.empty:
+        # Create an empty shell so downstream code still works
+        return pd.DataFrame(columns=["STATE", "CONTAMINANT", "MEDIAN_PPT"])
+
+    grp = (
+        df_pfas.groupby(["STATE_STD", "CONTAMINANT_STD"])["value_ppt"]
         .median()
         .reset_index()
-        .rename(columns={"PPT": "MEDIAN_PPT"})
     )
-    return grouped
+
+    grp = grp.rename(
+        columns={
+            "STATE_STD": "STATE",
+            "CONTAMINANT_STD": "CONTAMINANT",
+            "value_ppt": "MEDIAN_PPT",
+        }
+    )
+
+    # Sort for readability
+    grp = grp.sort_values(["STATE", "CONTAMINANT"]).reset_index(drop=True)
+
+    return grp
 
 
-def save_processed(df: pd.DataFrame, path: str = "data/processed/ucmr5_state_medians.csv"):
-    """Save processed medians to data/processed."""
-    out_path = Path(path)
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(out_path, index=False)
-    print(f"[OK] Saved processed file → {out_path}")
+def main():
+    df_raw = load_ucmr5_raw()
+    df_pfas = clean_and_filter(df_raw)
+    df_medians = aggregate_state_medians(df_pfas)
+
+    OUT_MEDIANS.parent.mkdir(parents=True, exist_ok=True)
+    df_medians.to_csv(OUT_MEDIANS, index=False)
+
+    print(f"[OK] Saved state PFAS medians → {OUT_MEDIANS}")
+    print(f"Rows in medians file: {len(df_medians):,}")
+
+    # Quick example for VA
+    ex = df_medians[df_medians["STATE"] == "VA"]
+    print("\nExample — median PFAS for VA:")
+    print(ex.head(20))
 
 
 if __name__ == "__main__":
-    print("Loading UCMR5...")
-    df = load_ucmr5()
-
-    print("Converting values to ppt...")
-    df = convert_to_ppt(df)
-
-    print("Computing state medians...")
-    med = compute_state_medians(df)
-
-    print("Saving processed file...")
-    save_processed(med)
-
-    print("\nExample — median PFAS for VA:")
-    print(med[med["STATE"] == "VA"])
+    main()
