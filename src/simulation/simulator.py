@@ -25,7 +25,7 @@ Outputs:
 from dataclasses import dataclass
 from typing import Dict, Any, List, Tuple
 
-from src.config.regulatory_limits import RegulatoryLimits
+from ..config.regulatory_limits import RegulatoryLimits
 from .pfas_background import load_background_medians, load_background_stats
 
 
