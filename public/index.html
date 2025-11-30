@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>PFAS DC RiskScope</title>
+
+    <!-- Leaflet -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        #map { width: 100%; height: 450px; margin-bottom: 20px; }
+        textarea { width: 100%; height: 120px; }
+        .result-box { background: #111; color: #0f0; padding: 12px; margin-top: 20px; }
+    </style>
+</head>
+
+<body>
+
+<h2>PFAS DC RiskScope — Click to Select a Site</h2>
+
+<div id="map"></div>
+<div id="clicked-location" style="margin-bottom: 10px;">Clicked location: none</div>
+
+<label>State (auto-filled):</label>
+<input id="state" type="text" style="width:100%; margin-bottom:10px;">
+
+<label>Receiving flow (MGD):</label>
+<input id="receiving-flow" type="text" style="width:100%; margin-bottom:10px;">
+
+<label>Discharge flow (MGD):</label>
+<input id="discharge-flow" type="text" style="width:100%; margin-bottom:10px;">
+
+<label>PFAS discharge (ppt, JSON dict):</label>
+<textarea id="pfas-json">{
+    "PFOA": 7.5,
+    "PFOS": 6.2,
+    "HFPO-DA": 5.0
+}</textarea>
+
+<button id="run-sim-btn">Run Simulation</button>
+<button id="pdf-btn">Download PDF</button>
+
+<h3>Simulation result (JSON)</h3>
+<pre id="sim-result" class="result-box"></pre>
+
+<script>
+
+// ------------------------------------------------------------------
+// MAP SETUP
+// ------------------------------------------------------------------
+const map = L.map('map').setView([39.0, -77.3], 9);
+
+L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+    maxZoom: 18,
+}).addTo(map);
+
+let marker;
+
+// ------------------------------------------------------------------
+// WHEN USER CLICKS MAP
+// ------------------------------------------------------------------
+map.on('click', async function(e) {
+    const lat = e.latlng.lat;
+    const lon = e.latlng.lng;
+
+    document.getElementById("clicked-location").innerText =
+        `Clicked location: ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+
+    // Move marker
+    if (marker) map.removeLayer(marker);
+    marker = L.marker([lat, lon]).addTo(map);
+
+    // Fetch watershed defaults from backend
+    try {
+        const res = await fetch(`/location-info?lat=${lat}&lon=${lon}`);
+        const info = await res.json();
+
+        document.getElementById("state").value = info.state;
+        document.getElementById("receiving-flow").value = info.receiving_flow_mgd;
+        document.getElementById("discharge-flow").value = info.discharge_flow_mgd;
+        document.getElementById("pfas-json").value =
+            JSON.stringify(info.pfas_default, null, 4);
+
+    } catch (err) {
+        console.error("Location lookup failed:", err);
+    }
+});
+
+// ------------------------------------------------------------------
+// RUN SIMULATION
+// ------------------------------------------------------------------
+document.getElementById("run-sim-btn").onclick = async () => {
+
+    const payload = {
+        state: document.getElementById("state").value,
+        receiving_flow_mgd: parseFloat(document.getElementById("receiving-flow").value),
+        discharge_flow_mgd: parseFloat(document.getElementById("discharge-flow").value),
+        discharge_pfas_ppt: JSON.parse(document.getElementById("pfas-json").value)
+    };
+
+    try {
+        const res = await fetch("/simulate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(payload)
+        });
+
+        const data = await res.json();
+        document.getElementById("sim-result").innerText = JSON.stringify(data, null, 4);
+
+    } catch (err) {
+        document.getElementById("sim-result").innerText =
+            "Simulation error: " + err;
+    }
+};
+
+// ------------------------------------------------------------------
+// EXPORT PDF
+// ------------------------------------------------------------------
+document.getElementById("pdf-btn").onclick = async () => {
+
+    const payload = {
+        state: document.getElementById("state").value,
+        receiving_flow_mgd: parseFloat(document.getElementById("receiving-flow").value),
+        discharge_flow_mgd: parseFloat(document.getElementById("discharge-flow").value),
+        discharge_pfas_ppt: JSON.parse(document.getElementById("pfas-json").value)
+    };
+
+    const res = await fetch("/export-pdf", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload)
+    });
+
+    const blob = await res.blob();
+    const url = window.URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "pfas_report.pdf";
+    link.click();
+
+    window.URL.revokeObjectURL(url);
+};
+
+</script>
+
+</body>
+</html>

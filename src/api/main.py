@@ -1,17 +1,14 @@
-"""
-main.py
-
-FastAPI application entry point for PFAS-DC RiskScope.
-"""
-
 from fastapi import FastAPI
 from .routes import router as simulation_router
+from .location_service import router as location_router
 
-app = FastAPI(
-    title="PFAS-DC RiskScope API",
-    description="Regulatory PFAS simulation for data-center siting and environmental planning",
-    version="0.1.0",
-)
+app = FastAPI(title="PFAS DC RiskScope")
 
-# Include all simulation routes
+# Register routers **AFTER** 'app' is created
 app.include_router(simulation_router)
+app.include_router(location_router)
+
+
+@app.get("/")
+def root():
+    return {"message": "PFAS DC RiskScope API running"}
