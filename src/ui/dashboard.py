@@ -1,188 +1,93 @@
-from fastapi import APIRouter
-from fastapi.responses import HTMLResponse
+import streamlit as st
+import requests
+import geopandas as gpd
+from shapely.geometry import Point
 
-router = APIRouter()
+API_URL = "http://localhost:8080/simulate"  # Your FastAPI container endpoint
 
-DASHBOARD_HTML = """
-<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8" />
-  <title>PFAS DC RiskScope</title>
-  <link
-    rel="stylesheet"
-    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
-  />
-  <style>
-    body { font-family: system-ui, sans-serif; margin: 0; padding: 1rem; }
-    #map { height: 460px; margin-bottom: 0.75rem; }
-    label { font-weight: 600; display: block; margin-top: 0.5rem; }
-    input, textarea { width: 100%; padding: 0.25rem; font-family: monospace; }
-    button { margin-top: 0.5rem; margin-right: 0.5rem; padding: 0.4rem 0.8rem; }
-    pre { background: #111; color: #eee; padding: 0.5rem; overflow-x: auto; }
-  </style>
-</head>
-<body>
-  <h2>PFAS DC RiskScope – Click to Select a Site</h2>
-  <div id="map"></div>
-  <p id="clicked-location">Clicked location: (none)</p>
 
-  <label>State (auto-filled):</label>
-  <input id="state" value="VA" />
+st.set_page_config(page_title="PFAS-DC RiskScope Dashboard", layout="wide")
+st.title("🧭 PFAS-DC RiskScope — Environmental & Regulatory Dashboard")
 
-  <label>Receiving flow (MGD):</label>
-  <input id="receiving_flow" value="42.0" />
+st.subheader("Select Data Center Location")
 
-  <label>Discharge flow (MGD):</label>
-  <input id="discharge_flow" value="3.5" />
 
-  <label>PFAS discharge (ppt, JSON dict):</label>
-  <textarea id="pfas_json" rows="5">
-{
-  "PFOA": 7.5,
-  "PFOS": 6.2,
-  "HFPO-DA": 5.0
-}
-  </textarea>
+# --- 1. Map Input ---
+# Create blank map center or use a real dataset later
+default_lat, default_lon = 38.9, -77.4  # Northern VA center point
 
-  <button id="run-btn">Run Simulation</button>
-  <button id="pdf-btn">Download PDF</button>
 
-  <h3>Simulation result (JSON)</h3>
-  <pre id="result"></pre>
+clicked_point = st.map(
+    data=gpd.GeoDataFrame(
+        geometry=[Point(default_lon, default_lat)],
+        crs="EPSG:4326"
+    )
+)
 
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script>
-    const map = L.map('map').setView([38.9, -77.2], 8);
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-      maxZoom: 18,
-      attribution: '&copy; OpenStreetMap contributors'
-    }).addTo(map);
+st.markdown("Click on the map to select a potential data center site.")
 
-    let marker = null;
-    let lastLat = null;
-    let lastLon = null;
 
-    async function updateContextFromClick(lat, lon) {
-      try {
-        const url = `/location-context?lat=${lat}&lon=${lon}`;
-        const resp = await fetch(url);
-        if (!resp.ok) {
-          console.error('Context fetch failed', resp.status);
-          return;
+# --- 2. User Input for Environmental Parameters ---
+st.sidebar.header("Environmental Factors")
+
+gw_vulnerability = st.sidebar.slider(
+    "Groundwater Vulnerability (0=Low, 1=High)",
+    0.0, 1.0, 0.3
+)
+
+surface_water_distance = st.sidebar.slider(
+    "Distance to Nearest Surface Water (km)",
+    0.1, 20.0, 3.0
+)
+
+water_stress = st.sidebar.selectbox(
+    "Water Stress Category",
+    ["low", "moderate", "high"]
+)
+
+ej_score = st.sidebar.slider(
+    "Environmental Justice Index (0–1)",
+    0.0, 1.0, 0.2
+)
+
+
+# --- 3. Trigger Simulation ---
+if st.button("Run PFAS Risk Simulation"):
+
+    # Placeholder values until map clicks are wired
+    payload = {
+        "chemicals": {
+            "concentrations_ppt": {
+                "PFOA": 2,
+                "PFOS": 3,
+                "PFHxS": 0.1,
+                "PFNA": 0.05,
+                "HFPO-DA": 0.01,
+                "PFBS": 0.2
+            }
+        },
+        "environmental_factors": {
+            "groundwater_vulnerability_index": gw_vulnerability,
+            "surface_water_distance_km": surface_water_distance,
+            "water_stress_category": water_stress,
+            "ej_score": ej_score,
+        },
+        "data_center": {
+            "cooling_type": "closed_loop",
+            "max_daily_water_withdrawal_mgd": 1.5,
+        },
+        "scenario_parameters": {
+            "time_horizon_years": 10
         }
-        const data = await resp.json();
-
-        document.getElementById('state').value = data.state || 'VA';
-        document.getElementById('receiving_flow').value = data.receiving_flow_mgd;
-        document.getElementById('discharge_flow').value = data.discharge_flow_mgd;
-        document.getElementById('pfas_json').value = JSON.stringify(
-          data.discharge_pfas_ppt,
-          null,
-          2
-        );
-      } catch (err) {
-        console.error('Error fetching context', err);
-      }
     }
 
-    map.on('click', async function(e) {
-      const lat = e.latlng.lat.toFixed(4);
-      const lon = e.latlng.lng.toFixed(4);
-      lastLat = parseFloat(lat);
-      lastLon = parseFloat(lon);
+    response = requests.post(API_URL, json=payload)
 
-      if (marker) {
-        marker.setLatLng(e.latlng);
-      } else {
-        marker = L.marker(e.latlng).addTo(map);
-      }
+    if response.status_code == 200:
+        result = response.json()
+        st.success("Simulation Complete")
 
-      document.getElementById('clicked-location').textContent =
-        `Clicked location: ${lat}, ${lon}`;
+        st.json(result)
 
-      // Ask backend for context based on lat/lon
-      await updateContextFromClick(lat, lon);
-    });
-
-    function buildPayload() {
-      const state = document.getElementById('state').value.trim() || 'VA';
-      const receiving_flow = parseFloat(document.getElementById('receiving_flow').value);
-      const discharge_flow = parseFloat(document.getElementById('discharge_flow').value);
-      const rawPfas = document.getElementById('pfas_json').value;
-
-      let pfasDict;
-      try {
-        pfasDict = JSON.parse(rawPfas);
-      } catch (e) {
-        alert('PFAS JSON is invalid. Please fix it.');
-        throw e;
-      }
-
-      return {
-        lat: lastLat,
-        lon: lastLon,
-        state: state,
-        receiving_flow_mgd: receiving_flow,
-        discharge_flow_mgd: discharge_flow,
-        discharge_pfas_ppt: pfasDict
-      };
-    }
-
-    async function runSimulation() {
-      try {
-        const payload = buildPayload();
-        const resp = await fetch('/simulate-simple', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        const data = await resp.json();
-        document.getElementById('result').textContent =
-          JSON.stringify(data, null, 2);
-      } catch (err) {
-        console.error(err);
-        alert('Simulation failed – see console for details');
-      }
-    }
-
-    async function downloadPdf() {
-      try {
-        const payload = buildPayload();
-        const resp = await fetch('/export-pdf-simple', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(payload)
-        });
-        if (!resp.ok) {
-          const txt = await resp.text();
-          console.error('PDF error', resp.status, txt);
-          alert('PDF generation failed – see console');
-          return;
-        }
-
-        const blob = await resp.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = 'pfas_risk_report.pdf';
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        window.URL.revokeObjectURL(url);
-      } catch (err) {
-        console.error(err);
-        alert('PDF download failed – see console');
-      }
-    }
-
-    document.getElementById('run-btn').addEventListener('click', runSimulation);
-    document.getElementById('pdf-btn').addEventListener('click', downloadPdf);
-  </script>
-</body>
-</html>
-"""
-
-@router.get("/ui", response_class=HTMLResponse)
-async def ui_root():
-    return HTMLResponse(DASHBOARD_HTML)
+    else:
+        st.error("Simulation API Error")

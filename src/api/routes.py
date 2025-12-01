@@ -3,13 +3,12 @@ from fastapi.responses import FileResponse
 from pathlib import Path
 
 from .middleware.payload_validator import validate_simulation_payload
-from src.simulation.simulator import PFASSimulator
 from .pdf_exporter import generate_pdf_report
+from src.simulation.simulator import PFASRiskSimulator
 
 router = APIRouter()
 
-simulator = PFASSimulator()
-
+simulator = PFASRiskSimulator()
 
 @router.get("/health")
 async def health():
