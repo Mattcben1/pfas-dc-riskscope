@@ -3,13 +3,12 @@ from fastapi.responses import FileResponse
 from pathlib import Path
 
 from .middleware.payload_validator import validate_simulation_payload
-from src.simulation.simulator import PFASRiskSimulator
+from src.simulation.simulator import PFASSimulator
 from .pdf_exporter import generate_pdf_report
 
 router = APIRouter()
 
-# Single global simulator instance used by BOTH endpoints
-simulator = PFASRiskSimulator()
+simulator = PFASSimulator()
 
 
 @router.get("/health")
@@ -19,19 +18,10 @@ async def health():
 
 @router.post("/simulate")
 async def simulate(payload: dict):
-    """
-    Runs the PFAS risk simulation and returns JSON.
-    """
     try:
-        validate_simulation_payload(payload)
-
-        # core call into the model
         result = simulator.simulate(payload)
-
         return result
-
     except Exception as e:
-        # bubble up as 500 so the UI can show the error text
         raise HTTPException(status_code=500, detail=str(e))
 
 

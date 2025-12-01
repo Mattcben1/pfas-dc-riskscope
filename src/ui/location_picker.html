@@ -1,9 +1,12 @@
 <!DOCTYPE html>
-<html>
+<html lang="en">
 <head>
-    <title>PFAS Location-Based Simulation</title>
-    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css" />
-    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <meta charset="UTF-8">
+    <title>PFAS DC RiskScope – Site Picker</title>
+
+    <!-- Leaflet CSS -->
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
+
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -11,162 +14,117 @@
         }
         #map {
             height: 500px;
-            margin-bottom: 20px;
-            border: 1px solid #ccc;
-        }
-        textarea {
             width: 100%;
-            height: 100px;
+            border: 2px solid #444;
+            border-radius: 8px;
         }
-        #result {
+        .info-box {
             margin-top: 20px;
-            padding: 10px;
-            background: #f4f4f4;
-            border-radius: 6px;
+            padding: 12px;
+            background: #f2f2f2;
+            border-radius: 8px;
             border: 1px solid #ccc;
-            white-space: pre-wrap;
         }
-        button {
-            padding: 10px 20px;
-            margin-right: 10px;
-            background: #0066cc;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-        }
-        button:hover {
-            background: #004c99;
+        input {
+            width: 280px;
+            padding: 6px;
+            margin: 5px 0;
         }
     </style>
 </head>
+
 <body>
 
-<h1>Click a location to simulate PFAS risk</h1>
+<h2>📍 PFAS DC RiskScope – Select a Site</h2>
+<p>Click anywhere on the map to auto-populate hydrology & location data.</p>
 
 <div id="map"></div>
 
-<p><b>Selected Location:</b> <span id="coords">None</span></p>
+<div class="info-box">
+    <h3>Location Picked</h3>
+    <label>Latitude:</label><br>
+    <input id="lat" readonly><br>
 
-<label>Receiving Flow (MGD):</label>
-<input id="receiving" type="number" value="42.0" step="0.1"><br><br>
+    <label>Longitude:</label><br>
+    <input id="lon" readonly><br>
 
-<label>Discharge Flow (MGD):</label>
-<input id="discharge" type="number" value="3.5" step="0.1"><br><br>
+    <label>State (auto-filled):</label><br>
+    <input id="state" readonly><br>
+</div>
 
-<label>PFAS Discharge (ppt) — JSON format:</label>
-<textarea id="pfasInput">
-{
-    "PFOA": 7.5,
-    "PFOS": 6.2,
-    "HFPO-DA": 5.0
-}
-</textarea>
+<div class="info-box">
+    <h3>Auto-Filled Hydrological Inputs</h3>
 
-<button onclick="runSim()">Run Simulation</button>
-<button onclick="exportPDF()">Download PDF</button>
+    <label>Receiving Flow (MGD):</label><br>
+    <input id="receiving_flow" readonly><br>
 
-<pre id="result">Simulation output will appear here...</pre>
+    <label>Discharge Flow (MGD):</label><br>
+    <input id="discharge_flow" readonly><br>
+</div>
+
+<div class="info-box">
+    <h3>Ready to Simulate?</h3>
+    <p>These values will flow directly into the simulation engine.</p>
+</div>
+
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 
 <script>
-// Map setup
-let map = L.map('map').setView([38.8, -77.5], 8);
-L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-    maxZoom: 19
-}).addTo(map);
+    //--------------------------------------
+    // 1. Initialize Map (center on Virginia)
+    //--------------------------------------
+    const map = L.map('map').setView([38.8, -77.3], 8);
 
-let marker = null;
-let selected = null;
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 18
+    }).addTo(map);
 
-map.on('click', function (e) {
-    selected = e.latlng;
+    let marker = null;
 
-    if (marker) map.removeLayer(marker);
+    //--------------------------------------
+    // 2. Handle user clicks
+    //--------------------------------------
+    map.on("click", async (e) => {
+        const lat = e.latlng.lat.toFixed(5);
+        const lon = e.latlng.lng.toFixed(5);
 
-    marker = L.marker(selected).addTo(map);
+        console.log("Map clicked:", lat, lon);
 
-    document.getElementById("coords").textContent =
-        selected.lat.toFixed(5) + ", " + selected.lng.toFixed(5);
-});
+        // place marker
+        if (marker) marker.remove();
+        marker = L.marker([lat, lon]).addTo(map);
 
-// POST helper
-async function postJson(url, data) {
-    const response = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(data),
+        // update UI immediately
+        document.getElementById("lat").value = lat;
+        document.getElementById("lon").value = lon;
+
+        //--------------------------------------
+        // 3. Ask backend for auto-filled data
+        //--------------------------------------
+        try {
+            const response = await fetch("/simulate-location", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({ lat: Number(lat), lon: Number(lon) })
+            });
+
+            if (!response.ok) {
+                throw new Error("Server returned " + response.status);
+            }
+
+            const data = await response.json();
+            console.log("Backend returned:", data);
+
+            // Fill auto-loaded values
+            document.getElementById("state").value          = data.state;
+            document.getElementById("receiving_flow").value = data.receiving_flow_mgd;
+            document.getElementById("discharge_flow").value = data.discharge_flow_mgd;
+
+        } catch (err) {
+            console.error("ERROR contacting backend:", err);
+            alert("Could not load location details. Check server logs.");
+        }
     });
-    if (!response.ok) {
-        throw new Error(await response.text());
-    }
-    return {
-        result: response,
-        body: await response.json().catch(() => null)
-    };
-}
-
-// RUN SIMULATION
-async function runSim() {
-    if (!selected) {
-        alert("Click a point on the map first!");
-        return;
-    }
-
-    const payload = {
-        lat: selected.lat,
-        lon: selected.lng,
-        receiving_flow_mgd: parseFloat(document.getElementById("receiving").value),
-        discharge_flow_mgd: parseFloat(document.getElementById("discharge").value),
-        discharge_pfas_ppt: JSON.parse(document.getElementById("pfasInput").value)
-    };
-
-    try {
-        const { body } = await postJson("/simulate-location", payload);
-        document.getElementById("result").textContent =
-            JSON.stringify(body, null, 2);
-    } catch (err) {
-        document.getElementById("result").textContent =
-            "ERROR:\n" + err;
-    }
-}
-
-// EXPORT PDF
-async function exportPDF() {
-    if (!selected) {
-        alert("Click a point on the map first!");
-        return;
-    }
-
-    const payload = {
-        lat: selected.lat,
-        lon: selected.lng,
-        receiving_flow_mgd: parseFloat(document.getElementById("receiving").value),
-        discharge_flow_mgd: parseFloat(document.getElementById("discharge").value),
-        discharge_pfas_ppt: JSON.parse(document.getElementById("pfasInput").value)
-    };
-
-    try {
-        const response = await fetch("/export-pdf-location", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify(payload)
-        });
-
-        if (!response.ok) throw new Error(await response.text());
-
-        const blob = await response.blob();
-        const url = window.URL.createObjectURL(blob);
-
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "PFAS_report.pdf";
-        a.click();
-
-    } catch (err) {
-        document.getElementById("result").textContent =
-            "PDF ERROR:\n" + err;
-    }
-}
 </script>
 
 </body>

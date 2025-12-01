@@ -1,37 +1,42 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 import requests
 
 router = APIRouter()
 
-@router.get("/location-info")
-def location_info(lat: float, lon: float):
-    """
-    Given a latitude/longitude, return:
-    - State (reverse geocode)
-    - Default receiving + discharge flow (placeholder)
-    - Default PFAS discharge values
-    """
+class LocationRequest(BaseModel):
+    lat: float
+    lon: float
 
-    # Reverse geocode to get state name
-    url = (
-        f"https://nominatim.openstreetmap.org/reverse?"
-        f"format=jsonv2&lat={lat}&lon={lon}"
-    )
+@router.post("/simulate-location")
+def simulate_location(payload: LocationRequest):
+    lat = payload.lat
+    lon = payload.lon
 
-    r = requests.get(url, headers={"User-Agent": "RiskScope"})
-    data = r.json()
+    # 1. Reverse geocode to state abbreviation
+    try:
+        url = f"https://nominatim.openstreetmap.org/reverse?lat={lat}&lon={lon}&format=json"
+        data = requests.get(url, headers={"User-Agent": "RiskScope"}).json()
+        state = data.get("address", {}).get("state", "UNKNOWN")
 
-    state = data.get("address", {}).get("state", "Unknown")
-
-    # Temporary placeholder hydrology values
-    # (We will replace these with real watershed flow data next)
-    return {
-        "state": state,
-        "receiving_flow_mgd": 42,
-        "discharge_flow_mgd": 3.5,
-        "pfas_default": {
-            "PFOA": 7.5,
-            "PFOS": 6.2,
-            "HFPO-DA": 5.0
+        # Make into proper 2-letter state code manually if needed
+        # Example: “Virginia” → “VA”
+        state_map = {
+            "Virginia": "VA",
+            "Maryland": "MD",
+            "Pennsylvania": "PA",
+            "West Virginia": "WV",
+            "Delaware": "DE"
         }
+        state_code = state_map.get(state, "US")
+
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+    # 2. Return auto-fill material
+    return {
+        "state": state_code,
+        "receiving_flow_mgd": 42.0,        # default placeholder
+        "discharge_flow_mgd": 3.5,         # default placeholder
+        "background_source": "auto-filled"
     }
