@@ -1,3 +1,5 @@
+# src/api/pdf_exporter.py
+
 from pathlib import Path
 from datetime import datetime
 
@@ -7,13 +9,12 @@ from reportlab.pdfgen import canvas
 
 def generate_pdf_report(result: dict) -> str:
     """
-    Create a polished PDF summary of the PFAS DC RiskScope simulation.
-    Fully aligned with the new PFASRiskSimulator output schema.
+    Generate a 1-page PDF summarizing the PFAS DC RiskScope simulation.
+
+    `result` is the dict returned by PFASRiskSimulator.simulate(), with
+    lat/lon and state optionally attached in routes.py.
     """
 
-    # -------------------------------
-    # Output folder
-    # -------------------------------
     output_dir = Path("assets/report_outputs")
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -33,73 +34,73 @@ def generate_pdf_report(result: dict) -> str:
         c.drawString(50, y, text)
         y -= dy
 
-    # -------------------------------
-    # Title + Timestamp
-    # -------------------------------
-    line("PFAS DC RiskScope – Simulation Report", font_size=18, bold=True, dy=26)
+    # --------------------------------------------------
+    # Title
+    # --------------------------------------------------
+    line("PFAS DC RiskScope – Simulation Report", font_size=16, bold=True, dy=22)
     line(f"Generated: {datetime.utcnow().isoformat()} UTC", font_size=9)
     y -= 10
 
-    # -------------------------------
-    # Location Block (if included)
-    # -------------------------------
-    location = result.get("location")
+    # --------------------------------------------------
+    # Location & State
+    # --------------------------------------------------
+    state = result.get("state", "N/A")
+    lat = result.get("lat", "N/A")
+    lon = result.get("lon", "N/A")
 
-    if location:
-        line("Location Details", bold=True, dy=20)
-
-        if location.get("type") == "nearest_pws":
-            line(f"  Nearest PWS: {location.get('name','N/A')} ({location.get('pwsid','?')})", font_size=10)
-            line(f"  State: {location.get('state','?')}", font_size=10)
-            line(f"  County: {location.get('county','?')}", font_size=10)
-            line(f"  Distance: {location.get('distance_km','?')} km", font_size=10)
-            line(f"  Coordinates: {location.get('lat')}, {location.get('lon')}", font_size=10)
-        else:
-            line("  No PWS found — using US-level background values.", font_size=10)
-            line(f"  Coordinates: {location.get('lat')}, {location.get('lon')}", font_size=10)
-
-        y -= 8
-
-    # -------------------------------
-    # Risk Summary
-    # -------------------------------
-    line("Risk Summary", bold=True, dy=20)
-
-    line(f"  Overall Risk Score (0–100):  {result.get('overall_risk_score_0_100','N/A')}", font_size=11)
-    line(f"  Risk Category:               {result.get('risk_category','N/A')}", font_size=11)
-    line(f"  Dominant Pathway:            {result.get('dominant_pathway','N/A')}", font_size=11)
-
-    mcl_flag = result.get("mcl_violation_flag", False)
-    hi_value = result.get("hazard_index_value", 0)
-    hi_flag = result.get("hazard_index_exceeds_1", False)
-
-    line(f"  MCL Violation:               {'YES' if mcl_flag else 'NO'}", font_size=11)
-    line(f"  Hazard Index:                {hi_value:.3f}", font_size=11)
-    line(f"  HI ≥ 1.0?                    {'YES' if hi_flag else 'NO'}", font_size=11)
+    line("Location & State", bold=True, dy=18)
+    line(f"  State (FIPS): {state}", font_size=10)
+    line(f"  Latitude: {lat}", font_size=10)
+    line(f"  Longitude: {lon}", font_size=10)
     y -= 8
 
-    # -------------------------------
-    # PFAS Concentration Table
-    # -------------------------------
-    line("Modeled Downstream PFAS Concentrations (ppt)", bold=True, dy=20)
+    # --------------------------------------------------
+    # Background & downstream PFAS (ppt)
+    # --------------------------------------------------
+    upstream = result.get("upstream_background_pfas_ppt", {}) or {}
+    downstream = result.get("modeled_downstream_concentrations_ppt", {}) or {}
 
-    concs = result.get("modeled_downstream_concentrations_ppt", {})
+    bg_pfoa = upstream.get("PFOA", 0.0)
+    bg_pfos = upstream.get("PFOS", 0.0)
+    dn_pfoa = downstream.get("PFOA", None)
+    dn_pfos = downstream.get("PFOS", None)
 
-    if concs:
-        for chem, value in concs.items():
-            line(f"  {chem}: {value:.3f} ppt", font_size=10, dy=14)
-    else:
-        line("  No PFAS concentration results available.", font_size=10)
-    y -= 6
+    line("Background PFAS (ppt)", bold=True, dy=18)
+    line(f"  PFOA: {bg_pfoa}", font_size=10)
+    line(f"  PFOS: {bg_pfos}", font_size=10)
+    y -= 8
 
-    # -------------------------------
+    line("Downstream PFAS (ppt)", bold=True, dy=18)
+    line(f"  PFOA: {dn_pfoa}", font_size=10)
+    line(f"  PFOS: {dn_pfos}", font_size=10)
+    y -= 8
+
+    # --------------------------------------------------
+    # Risk & regulatory summary
+    # --------------------------------------------------
+    hi = result.get("hazard_index_value", None)
+    hi_flag = result.get("hazard_index_exceeds_1", False)
+    risk_score = result.get("overall_risk_score_0_100", None)
+    category = result.get("risk_category", "N/A")
+    mcl_flag = result.get("mcl_violation_flag", None)
+    combined_flag = result.get("combined_mcl_violation", False)
+
+    line("Risk & Regulatory Summary", bold=True, dy=18)
+    line(f"  Hazard Index: {hi}", font_size=10)
+    line(f"  HI Exceeds 1.0? {hi_flag}", font_size=10)
+    line(f"  Risk Score (0–100): {risk_score}", font_size=10)
+    line(f"  Category: {category}", font_size=10)
+    line(f"  MCL Violation: {mcl_flag}", font_size=10)
+    line(f"  Combined MCL Violation: {combined_flag}", font_size=10)
+    y -= 8
+
+    # --------------------------------------------------
     # Notes
-    # -------------------------------
-    line("Model Interpretation Notes", bold=True, dy=20)
-    line("  • Intermediate PFAS risk model using simplified river mixing.", font_size=9, dy=12)
-    line("  • Includes EPA MCLs + Hazard Index screening.", font_size=9, dy=12)
-    line("  • Background PFAS levels derived from UCMR5 state medians.", font_size=9, dy=12)
-    line("  • Not a regulatory determination — exploratory only.", font_size=9, dy=12)
+    # --------------------------------------------------
+    line("Interpretation Notes", bold=True, dy=18)
+    line("  • Screening-level model, not a formal regulatory determination.", font_size=9, dy=12)
+    line("  • Background PFAS from UCMR5 state medians with national fallback.", font_size=9, dy=12)
+    line("  • Scenario factors approximate data-center discharge and mixing.", font_size=9, dy=12)
 
     c.showPage()
     c.save()

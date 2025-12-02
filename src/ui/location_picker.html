@@ -1,3 +1,4 @@
+<!-- src/ui/location_picker.html -->
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -11,26 +12,13 @@
         body { margin: 0; font-family: Arial, sans-serif; display: flex; height: 100vh; }
         #map { width: 70%; height: 100%; }
         #sidebar {
-            width: 30%;
-            padding: 20px;
-            background: #f6f6f6;
+            width: 30%; padding: 20px; background: #f6f6f6;
             border-left: 2px solid #ddd;
-            overflow-y: auto;
         }
         .title { font-size: 20px; margin-bottom: 10px; }
-        .sub {
-            margin-top: 6px;
-            margin-bottom: 6px;
-            font-size: 14px;
-            color: #555;
-        }
         button {
-            padding: 10px 14px;
-            margin-top: 10px;
-            background: #2D79F6;
-            color: white;
-            border: none;
-            border-radius: 5px;
+            padding: 10px 14px; margin-top: 10px;
+            background: #2D79F6; color: white; border: none; border-radius: 5px;
         }
         button:hover { background: #1c5edb; cursor: pointer; }
     </style>
@@ -41,20 +29,14 @@
 
 <div id="sidebar">
     <div class="title">Pick a location</div>
-    <p>Click the map to auto-fill PFAS background medians and water-flow assumptions.</p>
+    <p>Click the map to auto-fill PFAS background and water flow assumptions.</p>
 
     <p><strong>Latitude:</strong> <span id="lat">—</span></p>
     <p><strong>Longitude:</strong> <span id="lon">—</span></p>
     <p><strong>State (FIPS):</strong> <span id="state">—</span></p>
-
-    <div class="sub"><strong>Background PFAS (ppt):</strong></div>
-    <p>PFOA Median: <span id="pfoa">—</span></p>
-    <p>PFOS Median: <span id="pfos">—</span></p>
-    <p><strong>Average PFOA+PFOS:</strong> <span id="bg">—</span> ng/L</p>
-
-    <div class="sub"><strong>Hydrology Assumptions:</strong></div>
-    <p>Receiving Water Flow: <span id="rf">—</span> MGD</p>
-    <p>Data Center Discharge: <span id="df">—</span> MGD</p>
+    <p><strong>Background PFOA:</strong> <span id="pfoa">—</span> ppt</p>
+    <p><strong>Background PFOS:</strong> <span id="pfos">—</span> ppt</p>
+    <p><strong>Combined PFAS median:</strong> <span id="bg">—</span> ppt</p>
 
     <button id="go">Go to Dashboard</button>
 </div>
@@ -83,16 +65,12 @@
         });
 
         const data = await resp.json();
-        chosen = data;  // store entire backend response
+        chosen = data;
 
-        // These values now come from your corrected backend
-        document.getElementById("state").textContent = data.state_fips;
+        document.getElementById("state").textContent = data.state;
         document.getElementById("pfoa").textContent = data.background_pfoa_ppt.toFixed(2);
         document.getElementById("pfos").textContent = data.background_pfos_ppt.toFixed(2);
         document.getElementById("bg").textContent = data.background_pfas_median_ppt.toFixed(2);
-
-        document.getElementById("rf").textContent = data.receiving_flow_mgd;
-        document.getElementById("df").textContent = data.discharge_flow_mgd;
     });
 
     document.getElementById("go").onclick = () => {
@@ -101,15 +79,14 @@
             return;
         }
 
-        // Build dashboard URL with all required fields
-const url =
-    `/dashboard?lat=${chosen.lat}&lon=${chosen.lon}`
-    + `&state=${chosen.state}`                         // state = FIPS
-    + `&bg=${chosen.background_pfas_median_ppt}`
-    + `&pfoa=${chosen.background_pfoa_ppt}`
-    + `&pfos=${chosen.background_pfos_ppt}`
-    + `&rf=${chosen.receiving_flow_mgd}`
-    + `&df=${chosen.discharge_flow_mgd}`;
+        const url = `/dashboard?lat=${chosen.lat}`
+                  + `&lon=${chosen.lon}`
+                  + `&state=${chosen.state}`
+                  + `&bg=${chosen.background_pfas_median_ppt}`
+                  + `&pfoa=${chosen.background_pfoa_ppt}`
+                  + `&pfos=${chosen.background_pfos_ppt}`
+                  + `&rf=${chosen.receiving_flow_mgd}`
+                  + `&df=${chosen.discharge_flow_mgd}`;
 
         window.location.href = url;
     };

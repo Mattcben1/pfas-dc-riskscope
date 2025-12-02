@@ -1,132 +1,155 @@
+<!-- src/ui/dashboard.html -->
 <!DOCTYPE html>
 <html>
 <head>
-    <title>PFAS Dashboard</title>
+    <meta charset="UTF-8">
+    <title>PFAS RiskScope – Dashboard</title>
     <style>
-        body { margin:0; padding:20px; font-family:Arial; display:flex; }
-        #left { width:40%; padding-right:20px; border-right:1px solid #ccc; }
-        #right { width:60%; padding-left:20px; }
-        button { padding:10px 20px; margin-top:10px; background:#2D79F6; color:white; border:none; border-radius:5px; }
-        pre { background:#eee; padding:10px; white-space:pre-wrap; }
-        input { width:80px; }
+        body { margin:0; font-family:Arial,sans-serif; display:flex; height:100vh; }
+        #left {
+            width:40%; padding:20px; border-right:1px solid #ccc;
+            box-sizing:border-box; overflow-y:auto;
+        }
+        #right {
+            width:60%; padding:20px; box-sizing:border-box;
+            overflow-y:auto;
+        }
+        button {
+            padding:10px 16px; margin-top:10px;
+            background:#2D79F6; color:white; border:none; border-radius:5px;
+            cursor:pointer;
+        }
+        button:hover { background:#1c5edb; }
+        pre {
+            background:#eee; padding:10px; border-radius:6px;
+            white-space:pre-wrap;
+        }
+        input { width:80px; margin-bottom:5px; }
     </style>
 </head>
 <body>
 
 <div id="left">
     <h2>Simulation Controls</h2>
-
-    <p id="coords"></p>
-    <p id="state"></p>
-
-    <h3>Background PFAS (UCMR5 medians, ppt)</h3>
-    <p>PFOA background: <span id="bgPfoa">?</span></p>
-    <p>PFOS background: <span id="bgPfos">?</span></p>
-    <p>Median (avg): <span id="bgMed">?</span></p>
+    <p id="coords">Coordinates: —</p>
+    <p id="stateLabel">State (FIPS): —</p>
+    <p id="bgLabel">Background PFAS: — ppt</p>
 
     <h3>Data Center Discharge PFAS (ppt)</h3>
-    <label>PFOA: <input id="pfoa" type="number" step="0.1"></label><br>
-    <label>PFOS: <input id="pfos" type="number" step="0.1"></label><br>
+    <label>PFOA: <input id="pfoaInput" type="number" step="0.1"></label><br>
+    <label>PFOS: <input id="pfosInput" type="number" step="0.1"></label><br>
 
     <h3>Hydrology</h3>
-    <p id="flows"></p>
+    <p id="flows">Receiving flow: — MGD, Discharge: — MGD</p>
 
-    <button id="run">Run Simulation</button>
-    <button id="pdf">Export PDF</button>
+    <button id="runBtn">Run Simulation</button>
+    <button id="pdfBtn">Export PDF</button>
 </div>
 
 <div id="right">
     <h2>Results</h2>
-    <pre id="out">Awaiting simulation…</pre>
+    <pre id="out">Awaiting simulation.</pre>
 </div>
 
 <script>
-    // ============================
-    // Read URL parameters
-    // ============================
     const qs = new URLSearchParams(window.location.search);
 
-    const lat = parseFloat(qs.get("lat"));
-    const lon = parseFloat(qs.get("lon"));
-    const state = qs.get("state");   // FIPS code now
-    const bgMed = parseFloat(qs.get("bg"));
-    const bgPfoa = parseFloat(qs.get("pfoa"));
-    const bgPfos = parseFloat(qs.get("pfos"));
-    const rf = parseFloat(qs.get("rf"));
-    const df = parseFloat(qs.get("df"));
+    const lat = parseFloat(qs.get("lat") || "0");
+    const lon = parseFloat(qs.get("lon") || "0");
+    const state = qs.get("state") || "US";
+    const bg = parseFloat(qs.get("bg") || "0");
+    const rf = parseFloat(qs.get("rf") || "50");
+    const df = parseFloat(qs.get("df") || "3");
+    const bgPfoa = parseFloat(qs.get("pfoa") || bg || "0");
+    const bgPfos = parseFloat(qs.get("pfos") || (bg * 0.8) || "0");
 
-    // ============================
-    // Fill UI
-    // ============================
-    document.getElementById("coords").textContent = `Coords: ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
-    document.getElementById("state").textContent = `State (FIPS): ${state}`;
-    document.getElementById("bgPfoa").textContent = bgPfoa.toFixed(2);
-    document.getElementById("bgPfos").textContent = bgPfos.toFixed(2);
-    document.getElementById("bgMed").textContent = bgMed.toFixed(2);
-    document.getElementById("flows").textContent = `Receiving: ${rf} MGD | Discharge: ${df} MGD`;
+    const coordsEl = document.getElementById("coords");
+    const stateEl = document.getElementById("stateLabel");
+    const bgEl = document.getElementById("bgLabel");
+    const flowsEl = document.getElementById("flows");
+    const pfoaInput = document.getElementById("pfoaInput");
+    const pfosInput = document.getElementById("pfosInput");
+    const outEl = document.getElementById("out");
 
-    // Set initial discharge PFAS to match background
-    document.getElementById("pfoa").value = bgPfoa.toFixed(1);
-    document.getElementById("pfos").value = bgPfos.toFixed(1);
+    if (coordsEl && !Number.isNaN(lat) && !Number.isNaN(lon)) {
+        coordsEl.textContent = `Coordinates: ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+    }
+    if (stateEl) {
+        stateEl.textContent = `State (FIPS): ${state}`;
+    }
+    if (bgEl && !Number.isNaN(bg)) {
+        bgEl.textContent = `Background PFAS (approx): ${bg.toFixed(2)} ppt`;
+    }
+    if (flowsEl) {
+        flowsEl.textContent = `Receiving flow: ${rf} MGD, Discharge: ${df} MGD`;
+    }
 
-    // ============================
-    // Function to call simulation
-    // ============================
-    async function runSim(endpoint) {
+    if (pfoaInput) pfoaInput.value = bgPfoa.toFixed(2);
+    if (pfosInput) pfosInput.value = bgPfos.toFixed(2);
+
+    async function callSim(endpoint) {
         const payload = {
             state: state,
+            lat: lat,
+            lon: lon,
             chemicals: {
                 concentrations_ppt: {
-                    PFOA: parseFloat(document.getElementById("pfoa").value),
-                    PFOS: parseFloat(document.getElementById("pfos").value),
-                    PFHxS: bgMed * 0.15,    // synthetic but reasonable
-                    PFNA: bgMed * 0.07,
-                    "HFPO-DA": bgMed * 0.03,
-                    PFBS: bgMed * 0.12
+                    PFOA: parseFloat(pfoaInput.value || "0"),
+                    PFOS: parseFloat(pfosInput.value || "0"),
+                    PFHxS: 0.5,
+                    PFNA: 0.2,
+                    "HFPO-DA": 0.1,
+                    PFBS: 0.4
                 }
             },
             environmental_factors: {
-                receiving_water_flow_cfs: rf * 1.547,
                 groundwater_vulnerability_index: 0.6,
                 surface_water_distance_km: 1.0,
-                water_stress_category: "moderate"
+                water_stress_category: "moderate",
+                receiving_water_flow_cfs: rf * 1.547
             },
             data_center: {
-                max_daily_water_withdrawal_mgd: df,
-                cooling_type: "evaporative"
+                cooling_type: "evaporative",
+                max_daily_water_withdrawal_mgd: df
             }
         };
 
         const resp = await fetch(endpoint, {
-            method:"POST",
-            headers: {"Content-Type":"application/json"},
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
             body: JSON.stringify(payload)
         });
 
         return resp;
     }
 
-    // ============================
-    // Run Simulation handler
-    // ============================
-    document.getElementById("run").onclick = async () => {
-        const r = await runSim("/simulate");
-        const json = await r.json();
-        document.getElementById("out").textContent = JSON.stringify(json, null, 2);
+    document.getElementById("runBtn").onclick = async () => {
+        try {
+            const resp = await callSim("/simulate");
+            const json = await resp.json();
+            outEl.textContent = JSON.stringify(json, null, 2);
+        } catch (err) {
+            outEl.textContent = "Error running simulation: " + err;
+        }
     };
 
-    // ============================
-    // PDF Export handler
-    // ============================
-    document.getElementById("pdf").onclick = async () => {
-        const r = await runSim("/export-pdf");
-        const blob = await r.blob();
-        const url = URL.createObjectURL(blob);
-
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = "pfas_risk_report.pdf";
-        a.click();
+    document.getElementById("pdfBtn").onclick = async () => {
+        try {
+            const resp = await callSim("/export-pdf");
+            if (!resp.ok) {
+                const err = await resp.text();
+                alert("PDF error: " + err);
+                return;
+            }
+            const blob = await resp.blob();
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement("a");
+            a.href = url;
+            a.download = "pfas_risk_report.pdf";
+            a.click();
+        } catch (err) {
+            alert("PDF generation failed: " + err);
+        }
     };
 </script>
 
