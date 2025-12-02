@@ -1,168 +1,168 @@
-PFAS DC RiskScope
+# PFAS DC RiskScope
 
-A geospatial PFAS risk simulator built for the DS 3001 Final Case Study.
+A geospatial PFAS risk-screening tool built for the DS 3001 Final Case Study.
 
-1. Project Overview
+This project estimates PFAS concentration changes associated with data-center development by combining environmental datasets, hydrologic mixing logic, regulatory thresholds, and an interactive map interface.
 
-This project models PFAS (“forever chemicals”) risk around data-center hubs by combining:
+---
 
-Real EPA UCMR5 water-quality data
+## Project Overview
 
-Reverse-geocoded user locations
+This system models PFAS (“forever chemicals”) risk near user-selected locations by integrating:
 
-A river-mixing hydrology model
+- Real EPA UCMR5 PFAS measurements (2023 release)
+- Reverse-geocoded state identification (OpenStreetMap Nominatim)
+- A simplified river-mixing hydrology model
+- EPA regulatory limits and hazard-index methodology
+- A static web dashboard and one-click PDF reporting
 
-EPA health thresholds & hazard index calculations
+Users click a location on a map, load the environmental context, run a simulation, and export a formatted PDF summary.
 
-Users click a location on a map → the system loads PFAS background levels → runs a simulation → and exports a PDF risk report.
+This project applies core Systems 1 concepts:  
+FastAPI routing, Docker containerization, ETL pipelines, environment-variable management, client-side UI, and automated report generation.
 
-This project applies multiple Systems 1 concepts:
-✔ FastAPI microservice
-✔ Docker containerization
-✔ ETL pipeline for raw UCMR5 data
-✔ Input validation middleware
-✔ Static UI served from backend
-✔ Automated PDF report generation
+---
 
-2. Architecture Summary
+## Architecture Summary
 
-Flow:
+**End-to-end flow:**
 
-Leaflet Map UI → User clicks a location
+1. User clicks a location on the Leaflet map.
+2. `/simulate-location` reverse-geocodes the point and retrieves state-level PFAS medians.
+3. ETL pipeline ingests the UCMR5 dataset, converts raw units, and computes per-state medians.
+4. The simulation engine mixes upstream PFAS with data-center discharge under different hydrologic conditions.
+5. Regulatory logic evaluates MCL exceedances and the PFAS hazard index.
+6. `/export-pdf` generates a one-page simulation report.
 
-FastAPI /simulate-location → Reverse geocodes state + loads UCMR5 medians
+All services run within a single containerized FastAPI application.
 
-ETL Module → Cleans UCMR5 raw data, converts µg/L → ppt, builds state-level PFAS medians
+---
 
-Simulation Engine → Mixes upstream PFAS with data-center discharge
+## How to Run (Docker Recommended)
 
-Regulatory Logic → MCL, hazard index, and overall risk category
-
-PDF Exporter → Generates a one-page simulation summary
-
-All parts run inside a single Dockerized app.
-
-3. How to Run
-Using Docker (recommended)
+```bash
 docker build -t pfas:latest .
 docker run --rm -p 8080:8080 pfas:latest
+Then open: http://localhost:8080/map
+Workflow:
 
+-Click anywhere on the map
+-Auto-filled values load: state, PFAS background, hydrology
+-Click Go to Dashboard
+-Run the simulation
+-Export the final PDF risk report
 
-Then open:
-http://localhost:8080/location-picker
+# Key Design Decisions
 
-From there:
-→ Click a map point
-→ Go to Dashboard
-→ Run simulation
-→ Export the PDF report
+**FastAPI** – Chosen for fast development, built-in validation, and clean routing  
+**UCMR5 Dataset** – Large, real environmental dataset; provides state-level PFAS medians  
+**Median PFAS per State** – Balances realism with computational simplicity  
+**Mixing Model** – Simple but interpretable (river flow + discharge)  
+**PDF Output** – Enables reporting-ready scientific deliverables  
 
-4. Key Design Decisions
+---
 
-FastAPI chosen for speed, type hints, and clean routing
+# Security & Ethical Considerations
 
-UCMR5 dataset chosen for real-world environmental relevance
+- No personal data collected; only map coordinates are processed.  
+- Nominatim requests include a compliant User-Agent string.  
+- Sensitive configs stored in `.env` (not committed) with `env.txt` / `.env.example` provided.  
+- EPA PFAS data is public scientific data, used for learning—not regulatory decision-making.  
+- The tool avoids claiming certainty; all results are screening-level estimates only.  
 
-Median PFAS per state balances accuracy and project scope
+---
 
-Simple mixing model provides interpretable results
+# Testing
 
-PDF output adds professionalism and helps shareability
+A minimal but functional test suite is included:
 
+**tests/test_api.py**  
+- Verifies `/health` returns OK  
+- Validates `/simulate` returns correct structure  
+- Confirms `/simulate-location` returns a state + background PFAS values  
 
-Security & Ethical Considerations
+**Docker-based testing** ensures the entire app runs in a reproducible environment.
 
-The application does not collect any personal information; map clicks are processed entirely client-side.
+---
 
-All external requests to Nominatim include a safe User-Agent string to follow API usage policies.
+# Results & Validation
 
-Sensitive configuration values are stored in .env (NOT committed), with .env.example provided for reproducibility.
+- ETL pipeline parses and cleans the UCMR5 raw dataset.  
+- Background PFAS levels are computed as **medians per state**.  
+- The simulation outputs:
+  - downstream PFAS concentrations  
+  - hazard index  
+  - MCL exceedances  
+  - overall **0–100 risk score**  
 
-EPA PFAS data is non-sensitive, public, and scientific, used only for educational modeling—not regulatory decision-making.
+- `/simulate`, `/simulate-location`, and `/export-pdf` all function in Docker.  
+- The final PDF report includes:
+  - location  
+  - PFAS values  
+  - risk category  
+  - MCL interpretation  
 
+Screenshots included in `assets/screenshots/`.
 
-Testing
+---
 
-The project contains a minimal automated test suite:
+# What I Learned
 
-✔ tests/test_api.py
+This project strengthened skills in:
 
-Verifies the /health endpoint
+- Dockerized API development  
+- ETL workflows for large environmental datasets  
+- Reverse geocoding + mapping (Leaflet + Nominatim)  
+- Environmental modeling concepts (PFAS, hazard index, water mixing)  
+- Environment variables and secure configuration  
+- Reproducible scientific reporting via PDF generation  
 
-Ensures /simulate returns well-structured output for valid payloads
+It also demonstrated how environmental science and data engineering connect in real analysis.
 
-Checks /simulate-location returns a state + background PFAS results
+---
 
+# Repository Overview
 
-5. Results & Validation
+**src/api/** — FastAPI routes, PDF generation, location service  
+**src/etl/** — UCMR5 ingestion and cleaned background builder  
+**src/simulation/** — PFAS chemical schema and mixing model  
+**src/ui/** — HTML/JS interfaces (picker and dashboard)  
+**data/raw/** — Raw UCMR5 dataset  
+**data/processed/** — State PFAS medians  
+**assets/** — Diagrams, screenshots, templates  
+**Dockerfile** — Container build  
+**requirements.txt** — Python dependencies  
+**run.sh** — Optional runner
 
-ETL successfully parses all PFAS contaminants from UCMR5
+---
 
-Simulation outputs:
+# Data Sources
 
-downstream PFAS concentrations
-
-hazard index
-
-MCL exceedances
-
-overall risk score (0–100)
-
-Verified /health, /simulate, /simulate-location, and /export-pdf all function inside Docker
-
-PDF exports cleanly with correct values
-
-Screenshots included in /assets/screenshots.
-
-
-6. What I Learned
-
-This project helped me practice real microservice patterns, Dockerized development, API validation, environment-variable management, and handling large datasets. It also connected technical modeling with environmental science concepts like PFAS risk and hydrology.
-
-Repo Contents:
-src/api/            → API routes, location lookup, PDF exporter
-src/etl/            → UCMR5 ingestion + background builder
-src/simulation/     → PFAS model + mixing logic
-src/ui/             → HTML/JS user interface
-data/raw/           → Raw UCMR5 dataset
-data/processed/     → Processed state medians
-assets/             → screenshots + diagrams
-Dockerfile          → container build
-requirements.txt    → dependencies
-run.sh              → optional starter
-
-
-Data Sources:
-
-EPA UCMR5 Dataset (2023 Release)
-United States Environmental Protection Agency. Unregulated Contaminant Monitoring Rule 5 (UCMR 5) Data.
+## UCMR5 Dataset (EPA)
+United States Environmental Protection Agency — Unregulated Contaminant Monitoring Rule 5 (UCMR 5)  
 https://www.epa.gov/dwucmr/unregulated-contaminant-monitoring-rule-ucmr-5
 
-OpenStreetMap Nominatim API (Reverse Geocoding)
-OpenStreetMap Foundation.
+## OpenStreetMap Nominatim API
+Location lookup and reverse geocoding  
 https://nominatim.openstreetmap.org/
 
-Scientific + Regulatory References
+---
 
-EPA PFAS MCL Final Rule (2024/2025 Updates)
-https://www.epa.gov/pfas/pfas-national-primary-drinking-water-regulation
+# PFAS Regulatory & Scientific References
 
-EPA PFAS Mixture/Hazard Index Framework (2022–2023)
-https://www.epa.gov/sdwa/hazard-index-pfas
+- EPA PFAS MCL Final Rule (2024/2025):  
+  https://www.epa.gov/pfas/pfas-national-primary-drinking-water-regulation  
+- EPA Hazard Index for PFAS Mixtures:  
+  https://www.epa.gov/sdwa/hazard-index-pfas  
+- USGS PFAS Occurrence Studies:  
+  https://www.usgs.gov/mission-areas/water-resources/science/pfas
 
-USGS PFAS Occurrence Studies
-https://www.usgs.gov/mission-areas/water-resources/science/pfas
+---
 
-Maps & GIS
-Leaflet.js Open Map Library
-https://leafletjs.com/
+# Mapping Libraries
 
-OpenStreetMap Tile Service
-https://www.openstreetmap.org/copyright
+- Leaflet.js: https://leafletjs.com/  
+- OpenStreetMap Tiles: https://www.openstreetmap.org/copyright
 
-
-
-Links: 
-Github: Mattcben1/pfas-dc-riskscope
 
 
