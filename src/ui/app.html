@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>PFAS DC RiskScope</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+
+    <!-- Leaflet CSS -->
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+    />
+
+    <style>
+        body {
+            display: flex;
+            height: 100vh;
+            margin: 0;
+            font-family: Arial, sans-serif;
+        }
+        #map {
+            width: 50%;
+            height: 100%;
+        }
+        #dashboard {
+            width: 50%;
+            padding: 20px;
+            overflow-y: auto;
+            background: #fafafa;
+            border-left: 3px solid #ddd;
+        }
+        .value-box {
+            padding: 10px;
+            background: white;
+            border-radius: 6px;
+            margin-bottom: 12px;
+            border: 1px solid #ccc;
+        }
+        button {
+            padding: 10px 15px;
+            margin-top: 10px;
+            cursor: pointer;
+            background: #4a6cf7;
+            border: none;
+            color: white;
+            font-weight: bold;
+            border-radius: 5px;
+        }
+        button:hover {
+            background: #3654c2;
+        }
+    </style>
+
+</head>
+<body>
+
+    <!-- MAP -->
+    <div id="map"></div>
+
+    <!-- DASHBOARD -->
+    <div id="dashboard">
+        <h2>PFAS DC RiskScope</h2>
+        <h4 id="locationLabel">Click a location on the map</h4>
+
+        <div class="value-box" id="pfasSummary">PFAS Summary will appear here...</div>
+        <div class="value-box" id="regSummary">Regulatory Limits will appear here...</div>
+
+        <button id="runBtn" disabled>Run Simulation</button>
+
+        <div class="value-box" id="simOutput"></div>
+
+        <button id="pdfBtn" disabled>Export PDF Report</button>
+    </div>
+
+    <!-- Leaflet JS -->
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+
+    <script>
+        // -----------------------------------------
+        // Initialize the map
+        // -----------------------------------------
+        var map = L.map('map').setView([38.8, -77.3], 8);
+
+        L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+            maxZoom: 18,
+        }).addTo(map);
+
+        let selectedLat = null;
+        let selectedLon = null;
+
+        // -----------------------------------------
+        // Map click handler
+        // -----------------------------------------
+        map.on('click', async function(e) {
+            selectedLat = e.latlng.lat;
+            selectedLon = e.latlng.lng;
+
+            document.getElementById("locationLabel").innerText =
+                `Selected Location: ${selectedLat.toFixed(4)}, ${selectedLon.toFixed(4)}`;
+
+            // Hit FastAPI endpoint
+            const resp = await fetch(`/api/location?lat=${selectedLat}&lon=${selectedLon}`);
+            const data = await resp.json();
+
+            document.getElementById('pfasSummary').innerText =
+                `PFAS Estimate: ${data.estimated_pfas} ng/L`;
+
+            document.getElementById('regSummary').innerText =
+                `Is Above Limit? ${data.above_limit}`;
+
+            document.getElementById('runBtn').disabled = false;
+        });
+
+        // -----------------------------------------
+        // Run simulation
+        // -----------------------------------------
+        document.getElementById('runBtn').onclick = async function() {
+            const resp = await fetch("/api/simulate", {
+                method: "POST",
+                headers: {"Content-Type": "application/json"},
+                body: JSON.stringify({
+                    lat: selectedLat,
+                    lon: selectedLon,
+                    scenario: "baseline"
+                })
+            });
+
+            const result = await resp.json();
+            document.getElementById("simOutput").innerText =
+                `Risk Score: ${result.risk_score}`;
+            document.getElementById("pdfBtn").disabled = false;
+        };
+
+        // -----------------------------------------
+        // Export PDF
+        // -----------------------------------------
+        document.getElementById('pdfBtn').onclick = async function() {
+            window.open(`/api/export-pdf?lat=${selectedLat}&lon=${selectedLon}`);
+        };
+    </script>
+
+</body>
+</html>

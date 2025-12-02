@@ -1,70 +1,134 @@
 <!DOCTYPE html>
 <html>
 <head>
-  <title>PFAS DC RiskScope Dashboard</title>
-  <style>
-    body { font-family: Arial; margin: 30px; }
-    textarea { width: 100%; height: 150px; }
-    button { padding: 10px 20px; margin: 5px; }
-    pre { background: #111; color: #0f0; padding: 10px; }
-  </style>
+    <title>PFAS Dashboard</title>
+    <style>
+        body { margin:0; padding:20px; font-family:Arial; display:flex; }
+        #left { width:40%; padding-right:20px; border-right:1px solid #ccc; }
+        #right { width:60%; padding-left:20px; }
+        button { padding:10px 20px; margin-top:10px; background:#2D79F6; color:white; border:none; border-radius:5px; }
+        pre { background:#eee; padding:10px; white-space:pre-wrap; }
+        input { width:80px; }
+    </style>
 </head>
 <body>
 
-<h2>PFAS Simulation Dashboard</h2>
+<div id="left">
+    <h2>Simulation Controls</h2>
 
-<label>Latitude:</label>
-<input id="lat" type="text"><br><br>
+    <p id="coords"></p>
+    <p id="state"></p>
 
-<label>Longitude:</label>
-<input id="lon" type="text"><br><br>
+    <h3>Background PFAS (UCMR5 medians, ppt)</h3>
+    <p>PFOA background: <span id="bgPfoa">?</span></p>
+    <p>PFOS background: <span id="bgPfos">?</span></p>
+    <p>Median (avg): <span id="bgMed">?</span></p>
 
-<label>State:</label>
-<input id="state" type="text"><br><br>
+    <h3>Data Center Discharge PFAS (ppt)</h3>
+    <label>PFOA: <input id="pfoa" type="number" step="0.1"></label><br>
+    <label>PFOS: <input id="pfos" type="number" step="0.1"></label><br>
 
-<label>Receiving Flow (MGD):</label>
-<input id="receiving" type="text"><br><br>
+    <h3>Hydrology</h3>
+    <p id="flows"></p>
 
-<label>Discharge Flow (MGD):</label>
-<input id="discharge" type="text"><br><br>
+    <button id="run">Run Simulation</button>
+    <button id="pdf">Export PDF</button>
+</div>
 
-<label>PFAS Discharge JSON:</label>
-<textarea id="pfas">{ "PFOA": 7.5, "PFOS": 6.2, "HFPO-DA": 5.0 }</textarea>
-
-<br>
-<button onclick="runSim()">Run Simulation</button>
-<button onclick="downloadPDF()">Download PDF</button>
-
-<h3>Simulation Output</h3>
-<pre id="output"></pre>
+<div id="right">
+    <h2>Results</h2>
+    <pre id="out">Awaiting simulation…</pre>
+</div>
 
 <script>
-async function runSim() {
-    const payload = {
-        chemicals: { concentrations_ppt: JSON.parse(document.getElementById("pfas").value) },
-        environmental_factors: {
-            receiving_water_flow_mgd: parseFloat(document.getElementById("receiving").value),
-            groundwater_vulnerability_index: 0.5
-        },
-        data_center: {
-            max_daily_water_withdrawal_mgd: parseFloat(document.getElementById("discharge").value),
-            cooling_type: "closed_loop"
-        }
+    // ============================
+    // Read URL parameters
+    // ============================
+    const qs = new URLSearchParams(window.location.search);
+
+    const lat = parseFloat(qs.get("lat"));
+    const lon = parseFloat(qs.get("lon"));
+    const state = qs.get("state");   // FIPS code now
+    const bgMed = parseFloat(qs.get("bg"));
+    const bgPfoa = parseFloat(qs.get("pfoa"));
+    const bgPfos = parseFloat(qs.get("pfos"));
+    const rf = parseFloat(qs.get("rf"));
+    const df = parseFloat(qs.get("df"));
+
+    // ============================
+    // Fill UI
+    // ============================
+    document.getElementById("coords").textContent = `Coords: ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+    document.getElementById("state").textContent = `State (FIPS): ${state}`;
+    document.getElementById("bgPfoa").textContent = bgPfoa.toFixed(2);
+    document.getElementById("bgPfos").textContent = bgPfos.toFixed(2);
+    document.getElementById("bgMed").textContent = bgMed.toFixed(2);
+    document.getElementById("flows").textContent = `Receiving: ${rf} MGD | Discharge: ${df} MGD`;
+
+    // Set initial discharge PFAS to match background
+    document.getElementById("pfoa").value = bgPfoa.toFixed(1);
+    document.getElementById("pfos").value = bgPfos.toFixed(1);
+
+    // ============================
+    // Function to call simulation
+    // ============================
+    async function runSim(endpoint) {
+        const payload = {
+            state: state,
+            chemicals: {
+                concentrations_ppt: {
+                    PFOA: parseFloat(document.getElementById("pfoa").value),
+                    PFOS: parseFloat(document.getElementById("pfos").value),
+                    PFHxS: bgMed * 0.15,    // synthetic but reasonable
+                    PFNA: bgMed * 0.07,
+                    "HFPO-DA": bgMed * 0.03,
+                    PFBS: bgMed * 0.12
+                }
+            },
+            environmental_factors: {
+                receiving_water_flow_cfs: rf * 1.547,
+                groundwater_vulnerability_index: 0.6,
+                surface_water_distance_km: 1.0,
+                water_stress_category: "moderate"
+            },
+            data_center: {
+                max_daily_water_withdrawal_mgd: df,
+                cooling_type: "evaporative"
+            }
+        };
+
+        const resp = await fetch(endpoint, {
+            method:"POST",
+            headers: {"Content-Type":"application/json"},
+            body: JSON.stringify(payload)
+        });
+
+        return resp;
+    }
+
+    // ============================
+    // Run Simulation handler
+    // ============================
+    document.getElementById("run").onclick = async () => {
+        const r = await runSim("/simulate");
+        const json = await r.json();
+        document.getElementById("out").textContent = JSON.stringify(json, null, 2);
     };
 
-    const res = await fetch("/simulate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload)
-    });
+    // ============================
+    // PDF Export handler
+    // ============================
+    document.getElementById("pdf").onclick = async () => {
+        const r = await runSim("/export-pdf");
+        const blob = await r.blob();
+        const url = URL.createObjectURL(blob);
 
-    document.getElementById("output").textContent =
-        JSON.stringify(await res.json(), null, 2);
-}
-
-function downloadPDF() {
-    window.location.href = "/export-pdf-simple";
-}
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = "pfas_risk_report.pdf";
+        a.click();
+    };
 </script>
+
 </body>
 </html>

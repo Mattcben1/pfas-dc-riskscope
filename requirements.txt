@@ -8,5 +8,5 @@ geopandas
 requests
 fastapi
 uvicorn
-reportlab
 matplotlib
+

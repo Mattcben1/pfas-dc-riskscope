@@ -1,474 +1,198 @@
 """
 simulator.py
 
-Core PFAS risk simulation engine.
-
-This version uses:
-- EPA-aligned PFAS background stats (from UCMR5 medians)
-- EPA-style MCL and Hazard Index concepts (via RegulatoryLimits)
-- A simple surface-water mixing model:
-    C_total = C_background + C_discharge * (Q_discharge / (Q_discharge + Q_receiving))
-
-Inputs to simulate():
-- state: state abbreviation, e.g. "VA"
-- discharge_pfas_ppt: dict of PFAS name -> concentration in discharge (ppt)
-- discharge_flow_mgd: discharge flow (million gallons per day)
-- receiving_flow_mgd: receiving water flow (MGD) for the river/stream
-
-Outputs:
-- per-chemical results (baseline, total, MCL ratios)
-- combined PFOA+PFOS assessment
-- hazard index across hazard-index PFAS
-- qualitative overall_risk and uncertainty flags
+PFAS RiskScope – Final Simulation Engine
+----------------------------------------
+• Loads UCMR5 median PFAS concentrations per state (FIPS-based)
+• Applies a simple hydrologic mixing model for data-center discharge
+• Computes individual and combined MCL exceedances
+• Computes a PFAS Hazard Index
+• Produces a final 0–100 risk score + category
 """
 
-from dataclasses import dataclass
-from typing import Dict, Any, List, Tuple
+from typing import Dict, Any
 
-from ..config.regulatory_limits import RegulatoryLimits
-from .pfas_background import load_background_medians, load_background_stats
+from src.etl.ucmr5_ingest import load_ucmr5_background
+from src.simulation.model_schema import PFAS_CHEMICALS
 
-
-# EPA hazard index PFAS set
-HAZARD_INDEX_CHEMS = ["PFHXS", "PFNA", "PFBS", "HFPO-DA"]
-
-
-@dataclass
-class SimulationConfig:
-    mixing_model: str = "complete_mixing"
-    hi_threshold: float = 1.0  # Hazard Index threshold
-    combined_mcl_margin_low: float = 0.5  # below 50% of MCL = low concern
-    combined_mcl_margin_high: float = 1.0  # above MCL = high concern
+# Convert million gallons/day to cubic feet/second
+MGD_TO_CFS = 1.547
 
 
 class PFASRiskSimulator:
-    def __init__(self, config: SimulationConfig | None = None) -> None:
-        self.config = config or SimulationConfig()
+    def __init__(self):
+        # Load UCMR5 background dictionary:
+        # { "51": {"PFOA": X, "PFOS": Y, ...}, ...}
+        self.background_by_state: Dict[str, Dict[str, float]] = load_ucmr5_background()
 
-        # Load regulatory limits from YAML
-        self.reg_limits = RegulatoryLimits()
+        # EPA Draft MCL (ppt)
+        self.MCL = {"PFOA": 4.0, "PFOS": 4.0}
 
-        # Individual MCLs (ppt) for PFOA, PFOS, etc.
-        self.mcl_individual: Dict[str, float] = {
-            k.upper(): v
-            for k, v in self.reg_limits.get_mcl_limits().items()
+        # EPA Hazard Index chemicals + RfD-like scaling factors
+        self.HAZARD_RFD = {
+            "PFHxS": 2.0,
+            "PFNA": 10.0,
+            "HFPO-DA": 10.0,
+            "PFBS": 30.0,
         }
 
-        # Combined MCL for PFOA+PFOS (ppt), if present
-        combined = self.reg_limits.get_combined_limit()
-        self.combined_mcl_pfoa_pfos = combined.get("PFOA_PFOS", None)
+        # EPA combined MCL for PFOA + PFOS (ppt)
+        self.COMBINED_MCL = 4.0
 
-        # Hazard-index contaminants (names normalized to uppercase)
-        self.hi_contaminants: List[str] = [
-            c.upper() for c in self.reg_limits.get_hazard_index_contaminants().keys()
-        ]
+    # ------------------------------------------------------------------
+    # Background retrieval
+    # ------------------------------------------------------------------
+    def get_background(self, fips: str) -> Dict[str, float]:
+        """
+        Returns per-chemical background PFAS medians for a given state (FIPS code).
+        Missing chemicals default to 0.
+        """
+        fips = str(fips).zfill(2)  # ensure formatting
+        chem_map = self.background_by_state.get(fips, {})
 
-        # Background PFAS levels & stats from UCMR5
-        self.bg_medians = load_background_medians()       # STATE -> chem -> median_ppt
-        self.bg_stats = load_background_stats()           # STATE -> chem -> stats dict
+        return {chem: float(chem_map.get(chem, 0.0)) for chem in PFAS_CHEMICALS}
 
-    # -------------------------------------------------------------------------
-    # Core public API
-    # -------------------------------------------------------------------------
-    def simulate(
+    # ------------------------------------------------------------------
+    # Mixing model
+    # ------------------------------------------------------------------
+    def compute_mixed_concentrations(
         self,
-        *,
-        state: str,
-        discharge_pfas_ppt: Dict[str, float],
-        discharge_flow_mgd: float,
-        receiving_flow_mgd: float,
-    ) -> Dict[str, Any]:
+        upstream: Dict[str, float],
+        discharge: Dict[str, float],
+        env: Dict[str, Any],
+        dc: Dict[str, Any]
+    ) -> Dict[str, float]:
         """
-        Main entrypoint for PFAS simulation.
+        Simple 2-source mixing:
 
-        Args:
-            state: e.g. "VA"
-            discharge_pfas_ppt: dict of PFAS -> concentration in discharge (ppt)
-            discharge_flow_mgd: discharge flow (MGD)
-            receiving_flow_mgd: receiving river/stream flow (MGD)
-
-        Returns:
-            A dictionary suitable for JSON / PDF export with:
-            - inputs
-            - per_chemical_results
-            - combined_pfoa_pfos
-            - hazard_index
-            - overall_risk
-            - uncertainty_notes
+        C_down = (C_up * Q_river + C_eff * Q_eff) / (Q_river + Q_eff)
         """
+        # Convert flows
+        Q_river = float(env.get("receiving_water_flow_cfs", 100.0))
+        Q_eff = float(dc.get("max_daily_water_withdrawal_mgd", 0.0)) * MGD_TO_CFS
 
-        state = state.upper().strip()
+        if Q_eff <= 0:
+            return upstream.copy()
 
-        # Get background medians/stats for the state (or default to "US")
-        bg_medians_state = self._get_background_medians_for_state(state)
-        bg_stats_state = self._get_background_stats_for_state(state)
+        # Cooling-type enrichment factor
+        enrichment = {
+            "evaporative": 1.5,
+            "hybrid": 1.3,
+            "closed_loop": 1.1,
+            "air_cooled": 1.0,
+        }.get(dc.get("cooling_type", "closed_loop"), 1.1)
 
-        # Compute mixing factor for discharge into receiving waters
-        mixing_factor = self._compute_mixing_factor(
-            discharge_flow_mgd, receiving_flow_mgd
+        mixed = {}
+
+        for chem in PFAS_CHEMICALS:
+            c_up = float(upstream.get(chem, 0.0))
+            c_eff_base = float(discharge.get(chem, c_up))
+            c_eff = c_eff_base * enrichment
+
+            c_down = (c_up * Q_river + c_eff * Q_eff) / (Q_river + Q_eff)
+            mixed[chem] = c_down
+
+        return mixed
+
+    # ------------------------------------------------------------------
+    # Hazard Index
+    # ------------------------------------------------------------------
+    def compute_hazard_index(self, conc: Dict[str, float]) -> float:
+        hi = 0.0
+        for chem, rfd in self.HAZARD_RFD.items():
+            hi += float(conc.get(chem, 0.0)) / (rfd + 1e-9)
+        return hi
+
+    # ------------------------------------------------------------------
+    # MCL checks
+    # ------------------------------------------------------------------
+    def check_mcl(self, conc: Dict[str, float]) -> bool:
+        return any(conc.get(chem, 0.0) > mcl for chem, mcl in self.MCL.items())
+
+    def check_combined_mcl(self, conc: Dict[str, float]) -> bool:
+        return conc.get("PFOA", 0.0) + conc.get("PFOS", 0.0) > self.COMBINED_MCL
+
+    # ------------------------------------------------------------------
+    # MAIN SIMULATE
+    # ------------------------------------------------------------------
+    def simulate(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Expected payload from UI.
+        """
+        fips = payload.get("state", "00")  # use FIPS
+        discharge = payload["chemicals"]["concentrations_ppt"]
+        env = payload["environmental_factors"]
+        dc = payload["data_center"]
+
+        # Background PFAS (per-chemical)
+        upstream = self.get_background(fips)
+
+        # Apply mixing
+        downstream = self.compute_mixed_concentrations(
+            upstream=upstream,
+            discharge=discharge,
+            env=env,
+            dc=dc
         )
 
-        # Per-chemical evaluation
-        per_chem_results: Dict[str, Any] = {}
-        for chem_raw, discharge_conc in discharge_pfas_ppt.items():
-            chem = chem_raw.upper().strip()
-            result = self._evaluate_chemical(
-                chem=chem,
-                discharge_conc_ppt=discharge_conc,
-                bg_medians_state=bg_medians_state,
-                bg_stats_state=bg_stats_state,
-                mixing_factor=mixing_factor,
-            )
-            per_chem_results[chem] = result
+        # Hazard Index
+        hi = self.compute_hazard_index(downstream)
+        hi_flag = hi > 1.0
 
-        # Combined PFOA + PFOS assessment
-        combined_pfoa_pfos = self._evaluate_combined_pfoa_pfos(per_chem_results)
+        # MCL checks
+        mcl_flag = self.check_mcl(downstream)
+        combined_flag = self.check_combined_mcl(downstream)
 
-        # Hazard index across hazard index PFAS
-        hazard_index_info = self._evaluate_hazard_index(per_chem_results)
+        # Risk scoring
+        risk = 0.0
+        for chem, mcl_val in self.MCL.items():
+            c = downstream.get(chem, 0.0)
+            ratio = min(c / mcl_val, 3.0)
+            risk += ratio * 12.0  # max ~36
 
-        # Overall qualitative risk & uncertainty narrative
-        overall_risk, uncertainty_notes = self._derive_overall_risk(
-            combined_pfoa_pfos, hazard_index_info, per_chem_results
-        )
+        if hi_flag:
+            risk += 20
+        if combined_flag:
+            risk += 15
+
+        # Environmental stress multiplier
+        stress_level = env.get("water_stress_category", "low")
+        stress_mult = {"low": 1.0, "moderate": 1.2, "high": 1.4}.get(stress_level, 1.0)
+        risk *= stress_mult
+
+        # Clamp 0–100
+        risk = max(0, min(100, risk))
+
+        # Category
+        if risk < 25:
+            category = "low"
+        elif risk < 50:
+            category = "moderate"
+        elif risk < 75:
+            category = "high"
+        else:
+            category = "severe"
+
+        # Pathway inference
+        gw = float(env.get("groundwater_vulnerability_index", 0.5))
+        surf = float(env.get("surface_water_distance_km", 5.0))
+
+        if gw > 0.7:
+            pathway = "groundwater"
+        elif surf < 1.0:
+            pathway = "surface_water"
+        else:
+            pathway = "mixed"
 
         return {
-            "inputs": {
-                "state": state,
-                "discharge_flow_mgd": discharge_flow_mgd,
-                "receiving_flow_mgd": receiving_flow_mgd,
-                "mixing_factor": mixing_factor,
-                "discharge_pfas_ppt": discharge_pfas_ppt,
-            },
-            "per_chemical_results": per_chem_results,
-            "combined_pfoa_pfos": combined_pfoa_pfos,
-            "hazard_index": hazard_index_info,
-            "overall_risk": overall_risk,
-            "uncertainty_notes": uncertainty_notes,
+            "state_fips": fips,
+            "background_pfas_ppt": upstream,
+            "modeled_downstream_pfas_ppt": downstream,
+            "hazard_index": hi,
+            "hazard_index_exceeds_1": hi_flag,
+            "mcl_violation": mcl_flag,
+            "combined_mcl_violation": combined_flag,
+            "overall_risk_score": risk,
+            "risk_category": category,
+            "dominant_pathway": pathway,
         }
-
-    # -------------------------------------------------------------------------
-    # Internal helpers
-    # -------------------------------------------------------------------------
-    def _compute_mixing_factor(
-        self,
-        discharge_flow_mgd: float,
-        receiving_flow_mgd: float,
-    ) -> float:
-        """
-        Compute fraction of discharge concentration that appears in the mixed river.
-
-        For a simple complete-mixing model:
-            factor = Q_discharge / (Q_discharge + Q_receiving)
-
-        If receiving_flow_mgd is zero (very small stream / worst case), factor=1.
-        """
-        qd = max(discharge_flow_mgd, 0.0)
-        qr = max(receiving_flow_mgd, 0.0)
-
-        denom = qd + qr
-        if denom <= 0:
-            # No receiving water, extremely conservative assumption
-            return 1.0
-
-        return qd / denom
-
-    def _get_background_medians_for_state(self, state: str) -> Dict[str, float]:
-        """
-        Return background medians for a state, falling back to "US" if missing.
-        """
-        if state in self.bg_medians:
-            return self.bg_medians[state]
-        # Fallback to national medians
-        return self.bg_medians.get("US", {})
-
-    def _get_background_stats_for_state(self, state: str) -> Dict[str, Dict[str, float]]:
-        """
-        Return full background stats for a state, falling back to "US" if missing.
-        """
-        if state in self.bg_stats:
-            return self.bg_stats[state]
-        return self.bg_stats.get("US", {})
-
-    def _evaluate_chemical(
-        self,
-        chem: str,
-        discharge_conc_ppt: float,
-        bg_medians_state: Dict[str, float],
-        bg_stats_state: Dict[str, Dict[str, float]],
-        mixing_factor: float,
-    ) -> Dict[str, Any]:
-        """
-        Compute:
-        - baseline (background) concentration
-        - incremental concentration from discharge (post-mixing)
-        - total concentration
-        - ratio to individual MCL (if available)
-        - simple uncertainty metrics based on detection frequency & sample count
-        """
-
-        # Background median in ppt (state-level), fallback to 0.0
-        bg_median = bg_medians_state.get(chem, 0.0)
-
-        # Stats for uncertainty (if available)
-        stats = bg_stats_state.get(chem, {})
-        n_samples = stats.get("n_samples", 0.0)
-        pct_detected = stats.get("pct_detected", 0.0)
-        max_ppt = stats.get("max_ppt", 0.0)
-
-        # Post-mixing incremental concentration from data center
-        # (if no mixing factor, we default to full discharge concentration)
-        incremental = discharge_conc_ppt * mixing_factor
-
-        total_conc = bg_median + incremental
-
-        # Relationship to EPA MCL (if any)
-        mcl = self.mcl_individual.get(chem, None)
-        mcl_ratio = None
-        status = "no_mcl"
-
-        if mcl is not None and mcl > 0:
-            mcl_ratio = total_conc / mcl
-            if mcl_ratio < self.config.combined_mcl_margin_low:
-                status = "below_half_mcl"
-            elif mcl_ratio <= self.config.combined_mcl_margin_high:
-                status = "near_mcl"
-            else:
-                status = "above_mcl"
-
-        # Uncertainty classification (very simple, based on detection rate + sample count)
-        if n_samples < 5:
-            uncertainty = "low_data_volume"
-        elif pct_detected < 1.0:  # <1% detections
-            uncertainty = "rarely_detected"
-        elif pct_detected < 20.0:
-            uncertainty = "sometimes_detected"
-        else:
-            uncertainty = "frequently_detected"
-
-        return {
-            "chemical": chem,
-            "background_median_ppt": bg_median,
-            "background_max_ppt": max_ppt,
-            "n_samples": n_samples,
-            "pct_detected": pct_detected,
-            "discharge_conc_ppt": discharge_conc_ppt,
-            "incremental_conc_ppt": incremental,
-            "total_conc_ppt": total_conc,
-            "mcl_ppt": mcl,
-            "mcl_ratio": mcl_ratio,
-            "mcl_status": status,
-            "uncertainty_class": uncertainty,
-        }
-
-    def _evaluate_combined_pfoa_pfos(
-        self,
-        per_chem_results: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """
-        Evaluate combined risk for PFOA + PFOS, if a combined MCL is defined.
-        """
-
-        pfoa = per_chem_results.get("PFOA")
-        pfos = per_chem_results.get("PFOS")
-
-        if not pfoa and not pfos:
-            return {
-                "combined_mcl_ppt": self.combined_mcl_pfoa_pfos,
-                "total_pfoa_pfos_ppt": None,
-                "ratio_to_combined_mcl": None,
-                "status": "no_pfoa_pfos_provided",
-            }
-
-        total_pfoa = pfoa["total_conc_ppt"] if pfoa else 0.0
-        total_pfos = pfos["total_conc_ppt"] if pfos else 0.0
-        combined_total = total_pfoa + total_pfos
-
-        if self.combined_mcl_pfoa_pfos is None or self.combined_mcl_pfoa_pfos <= 0:
-            return {
-                "combined_mcl_ppt": None,
-                "total_pfoa_pfos_ppt": combined_total,
-                "ratio_to_combined_mcl": None,
-                "status": "no_combined_mcl_defined",
-            }
-
-        ratio = combined_total / self.combined_mcl_pfoa_pfos
-        if ratio < self.config.combined_mcl_margin_low:
-            status = "below_half_combined_mcl"
-        elif ratio <= self.config.combined_mcl_margin_high:
-            status = "near_combined_mcl"
-        else:
-            status = "above_combined_mcl"
-
-        return {
-            "combined_mcl_ppt": self.combined_mcl_pfoa_pfos,
-            "total_pfoa_pfos_ppt": combined_total,
-            "ratio_to_combined_mcl": ratio,
-            "status": status,
-        }
-
-    def _evaluate_hazard_index(
-        self,
-        per_chem_results: Dict[str, Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """
-        Compute a simple Hazard Index (HI) across hazard-index PFAS.
-
-        We approximate by treating each hazard-index PFAS as having
-        a "benchmark" equal to its MCL equivalent if present, otherwise
-        we skip or assume a nominal benchmark.
-        """
-
-        # Use whichever list is more authoritative:
-        hi_chems: List[str] = (
-            self.hi_contaminants if self.hi_contaminants else HAZARD_INDEX_CHEMS
-        )
-
-        components: List[Tuple[str, float]] = []
-        hi_value = 0.0
-
-        for chem in hi_chems:
-            res = per_chem_results.get(chem)
-            if not res:
-                continue
-
-            total_conc = res["total_conc_ppt"]
-            benchmark = res.get("mcl_ppt") or self.mcl_individual.get(chem)
-
-            if not benchmark or benchmark <= 0:
-                # If no benchmark, skip contribution
-                continue
-
-            hq = total_conc / benchmark  # hazard quotient
-            hi_value += hq
-            components.append((chem, hq))
-
-        if not components:
-            return {
-                "hi_value": None,
-                "hi_threshold": self.config.hi_threshold,
-                "status": "no_hi_chemicals_found",
-                "components": [],
-            }
-
-        if hi_value < 0.5 * self.config.hi_threshold:
-            status = "hi_well_below_threshold"
-        elif hi_value <= self.config.hi_threshold:
-            status = "hi_near_threshold"
-        else:
-            status = "hi_above_threshold"
-
-        return {
-            "hi_value": hi_value,
-            "hi_threshold": self.config.hi_threshold,
-            "status": status,
-            "components": [
-                {"chemical": c, "hazard_quotient": hq} for c, hq in components
-            ],
-        }
-
-    def _derive_overall_risk(
-        self,
-        combined_pfoa_pfos: Dict[str, Any],
-        hazard_index_info: Dict[str, Any],
-        per_chem_results: Dict[str, Dict[str, Any]],
-    ) -> Tuple[str, List[str]]:
-        """
-        Combine MCL, combined MCL, and HI information into an overall
-        qualitative risk classification + short uncertainty narrative.
-        """
-
-        notes: List[str] = []
-
-        # Check for obvious high-risk signals
-        high_mcl_exceedances = [
-            chem
-            for chem, res in per_chem_results.items()
-            if res.get("mcl_status") == "above_mcl"
-        ]
-
-        hi_status = hazard_index_info.get("status")
-        hi_value = hazard_index_info.get("hi_value")
-
-        combined_status = combined_pfoa_pfos.get("status")
-        combined_ratio = combined_pfoa_pfos.get("ratio_to_combined_mcl")
-
-        # Overall risk classification
-        if high_mcl_exceedances or hi_status == "hi_above_threshold" or (
-            isinstance(combined_ratio, (int, float))
-            and combined_ratio > self.config.combined_mcl_margin_high
-        ):
-            overall = "HIGH"
-        elif (
-            hi_status == "hi_near_threshold"
-            or combined_status == "near_combined_mcl"
-            or any(
-                res.get("mcl_status") == "near_mcl"
-                for res in per_chem_results.values()
-            )
-        ):
-            overall = "MODERATE"
-        else:
-            overall = "LOW"
-
-        # Uncertainty narrative based on background detection patterns
-        low_data_chems = [
-            chem
-            for chem, res in per_chem_results.items()
-            if res.get("uncertainty_class") in ("low_data_volume", "rarely_detected")
-        ]
-        if low_data_chems:
-            notes.append(
-                "Several PFAS have limited or low-frequency detections in UCMR5 "
-                f"background data: {', '.join(sorted(low_data_chems))}."
-            )
-
-        if overall == "HIGH" and hi_value:
-            notes.append(
-                f"Hazard Index is above the reference threshold (HI={hi_value:.2f})."
-            )
-
-        if (
-            isinstance(combined_ratio, (int, float))
-            and combined_ratio > self.config.combined_mcl_margin_high
-        ):
-            notes.append(
-                f"Combined PFOA+PFOS concentration exceeds the proposed combined MCL "
-                f"(ratio={combined_ratio:.2f})."
-            )
-
-        if high_mcl_exceedances:
-            notes.append(
-                "One or more PFAS individually exceed their proposed MCLs: "
-                + ", ".join(sorted(high_mcl_exceedances))
-                + "."
-            )
-
-        if not notes:
-            notes.append(
-                "No PFAS in this scenario exceed proposed EPA MCLs or the hazard index threshold, "
-                "given the assumed background and mixing conditions."
-            )
-
-        return overall, notes
-
-
-if __name__ == "__main__":
-    # Simple manual test harness (used with `python -m src.simulation.simulator` style
-    # if package structure allows). Typically called via API.
-    sim = PFASSimulator()
-
-    example = sim.simulate(
-        state="VA",
-        discharge_pfas_ppt={
-            "PFOA": 10.0,
-            "PFOS": 8.0,
-            "HFPO-DA": 5.0,
-        },
-        discharge_flow_mgd=1.0,
-        receiving_flow_mgd=10.0,
-    )
-
-    from pprint import pprint
-
-    pprint(example)

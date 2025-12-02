@@ -213,3 +213,16 @@ PFAS_CHEM_INFO: Dict[str, PFASInfo] = {
 
 def is_pfas(name: str) -> bool:
     return name.upper().strip() in PFAS_CHEM_INFO
+def map_point_to_region(lat: float, lon: float) -> str:
+    """
+    Classify the clicked location into a region label.
+    Placeholder logic for now.
+    """
+
+    if 37.8 <= lat <= 39.5 and -79 <= lon <= -76:
+        return "Northern VA"
+
+    if 38 <= lat <= 40 and -77.5 <= lon <= -74:
+        return "Maryland"
+
+    return "US-OTHER"

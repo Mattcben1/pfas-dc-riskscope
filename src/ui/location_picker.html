@@ -2,129 +2,117 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <title>PFAS DC RiskScope – Site Picker</title>
+    <title>PFAS RiskScope – Location Picker</title>
 
-    <!-- Leaflet CSS -->
-    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
+    <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+    <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
     <style>
-        body {
-            font-family: Arial, sans-serif;
-            margin: 20px;
+        body { margin: 0; font-family: Arial, sans-serif; display: flex; height: 100vh; }
+        #map { width: 70%; height: 100%; }
+        #sidebar {
+            width: 30%;
+            padding: 20px;
+            background: #f6f6f6;
+            border-left: 2px solid #ddd;
+            overflow-y: auto;
         }
-        #map {
-            height: 500px;
-            width: 100%;
-            border: 2px solid #444;
-            border-radius: 8px;
+        .title { font-size: 20px; margin-bottom: 10px; }
+        .sub {
+            margin-top: 6px;
+            margin-bottom: 6px;
+            font-size: 14px;
+            color: #555;
         }
-        .info-box {
-            margin-top: 20px;
-            padding: 12px;
-            background: #f2f2f2;
-            border-radius: 8px;
-            border: 1px solid #ccc;
+        button {
+            padding: 10px 14px;
+            margin-top: 10px;
+            background: #2D79F6;
+            color: white;
+            border: none;
+            border-radius: 5px;
         }
-        input {
-            width: 280px;
-            padding: 6px;
-            margin: 5px 0;
-        }
+        button:hover { background: #1c5edb; cursor: pointer; }
     </style>
 </head>
-
 <body>
-
-<h2>📍 PFAS DC RiskScope – Select a Site</h2>
-<p>Click anywhere on the map to auto-populate hydrology & location data.</p>
 
 <div id="map"></div>
 
-<div class="info-box">
-    <h3>Location Picked</h3>
-    <label>Latitude:</label><br>
-    <input id="lat" readonly><br>
+<div id="sidebar">
+    <div class="title">Pick a location</div>
+    <p>Click the map to auto-fill PFAS background medians and water-flow assumptions.</p>
 
-    <label>Longitude:</label><br>
-    <input id="lon" readonly><br>
+    <p><strong>Latitude:</strong> <span id="lat">—</span></p>
+    <p><strong>Longitude:</strong> <span id="lon">—</span></p>
+    <p><strong>State (FIPS):</strong> <span id="state">—</span></p>
 
-    <label>State (auto-filled):</label><br>
-    <input id="state" readonly><br>
+    <div class="sub"><strong>Background PFAS (ppt):</strong></div>
+    <p>PFOA Median: <span id="pfoa">—</span></p>
+    <p>PFOS Median: <span id="pfos">—</span></p>
+    <p><strong>Average PFOA+PFOS:</strong> <span id="bg">—</span> ng/L</p>
+
+    <div class="sub"><strong>Hydrology Assumptions:</strong></div>
+    <p>Receiving Water Flow: <span id="rf">—</span> MGD</p>
+    <p>Data Center Discharge: <span id="df">—</span> MGD</p>
+
+    <button id="go">Go to Dashboard</button>
 </div>
-
-<div class="info-box">
-    <h3>Auto-Filled Hydrological Inputs</h3>
-
-    <label>Receiving Flow (MGD):</label><br>
-    <input id="receiving_flow" readonly><br>
-
-    <label>Discharge Flow (MGD):</label><br>
-    <input id="discharge_flow" readonly><br>
-</div>
-
-<div class="info-box">
-    <h3>Ready to Simulate?</h3>
-    <p>These values will flow directly into the simulation engine.</p>
-</div>
-
-<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
 
 <script>
-    //--------------------------------------
-    // 1. Initialize Map (center on Virginia)
-    //--------------------------------------
-    const map = L.map('map').setView([38.8, -77.3], 8);
+    let map = L.map('map').setView([38.9, -77.1], 9);
 
-    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
-        maxZoom: 18
+    L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
+        maxZoom: 19
     }).addTo(map);
 
     let marker = null;
+    let chosen = null;
 
-    //--------------------------------------
-    // 2. Handle user clicks
-    //--------------------------------------
     map.on("click", async (e) => {
-        const lat = e.latlng.lat.toFixed(5);
-        const lon = e.latlng.lng.toFixed(5);
-
-        console.log("Map clicked:", lat, lon);
-
-        // place marker
         if (marker) marker.remove();
-        marker = L.marker([lat, lon]).addTo(map);
+        marker = L.marker(e.latlng).addTo(map);
 
-        // update UI immediately
-        document.getElementById("lat").value = lat;
-        document.getElementById("lon").value = lon;
+        document.getElementById("lat").textContent = e.latlng.lat.toFixed(6);
+        document.getElementById("lon").textContent = e.latlng.lng.toFixed(6);
 
-        //--------------------------------------
-        // 3. Ask backend for auto-filled data
-        //--------------------------------------
-        try {
-            const response = await fetch("/simulate-location", {
-                method: "POST",
-                headers: {"Content-Type": "application/json"},
-                body: JSON.stringify({ lat: Number(lat), lon: Number(lon) })
-            });
+        const resp = await fetch("/simulate-location", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ lat: e.latlng.lat, lon: e.latlng.lng })
+        });
 
-            if (!response.ok) {
-                throw new Error("Server returned " + response.status);
-            }
+        const data = await resp.json();
+        chosen = data;  // store entire backend response
 
-            const data = await response.json();
-            console.log("Backend returned:", data);
+        // These values now come from your corrected backend
+        document.getElementById("state").textContent = data.state_fips;
+        document.getElementById("pfoa").textContent = data.background_pfoa_ppt.toFixed(2);
+        document.getElementById("pfos").textContent = data.background_pfos_ppt.toFixed(2);
+        document.getElementById("bg").textContent = data.background_pfas_median_ppt.toFixed(2);
 
-            // Fill auto-loaded values
-            document.getElementById("state").value          = data.state;
-            document.getElementById("receiving_flow").value = data.receiving_flow_mgd;
-            document.getElementById("discharge_flow").value = data.discharge_flow_mgd;
-
-        } catch (err) {
-            console.error("ERROR contacting backend:", err);
-            alert("Could not load location details. Check server logs.");
-        }
+        document.getElementById("rf").textContent = data.receiving_flow_mgd;
+        document.getElementById("df").textContent = data.discharge_flow_mgd;
     });
+
+    document.getElementById("go").onclick = () => {
+        if (!chosen) {
+            alert("Click a location on the map first.");
+            return;
+        }
+
+        // Build dashboard URL with all required fields
+const url =
+    `/dashboard?lat=${chosen.lat}&lon=${chosen.lon}`
+    + `&state=${chosen.state}`                         // state = FIPS
+    + `&bg=${chosen.background_pfas_median_ppt}`
+    + `&pfoa=${chosen.background_pfoa_ppt}`
+    + `&pfos=${chosen.background_pfos_ppt}`
+    + `&rf=${chosen.receiving_flow_mgd}`
+    + `&df=${chosen.discharge_flow_mgd}`;
+
+        window.location.href = url;
+    };
 </script>
 
 </body>
