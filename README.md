@@ -41,7 +41,7 @@ All services run within a single containerized FastAPI application.
 ## How to Run (Docker Recommended)
 
 ```bash
-docker build -t pfas:latest .
+docker build --no-cache -t pfas:latest .
 docker run --rm -p 8080:8080 pfas:latest
 ```
 Then open: http://localhost:8080/map
@@ -164,6 +164,7 @@ https://nominatim.openstreetmap.org/
 
 - Leaflet.js: https://leafletjs.com/  
 - OpenStreetMap Tiles: https://www.openstreetmap.org/copyright
+
 
 
 
